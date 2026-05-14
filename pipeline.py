@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-999 Lá Thư — TikTok Video Pipeline (v4)
-- Bỏ AI keywords → dùng keyword "nature" cố định + tracking tránh trùng video
-- AI format TTS (emotional emphasis prompt)
+999 Lá Thư — TikTok Video Pipeline (v5)
+- Bỏ AI keywords → 15 keyword nature cố định + tracking tránh trùng
+- AI format TTS (emotional emphasis, prompt rút gọn để tránh timeout qwen3.5)
 - ElevenLabs eleven_v3 + giọng BdXlJle17DV6QV63lzql
-- ffmpeg compose 1080×1920 TikTok → upload CDN
+- Whisper word timestamps → .ass subtitle chạy theo giọng đọc
+- ffmpeg compose 1080×1920 + burn-in subtitle → upload CDN
 """
 
-import json, os, sys, subprocess, time
+import json, os, sys, subprocess, time, re
 import urllib.request, urllib.parse
 
 # === CONFIG ===
@@ -21,52 +22,29 @@ OLLAMA_MODEL = "qwen3.5:cloud"
 OLLAMA_BASE = "http://localhost:11434"
 STATE_FILE = os.path.expanduser("~/.hermes/state/pexels_used_videos.json")
 
-# Keyword cố định — vibe nature nhẹ nhàng
 PEXELS_QUERIES = [
-    "nature peaceful landscape",
-    "calm ocean waves beach",
-    "gentle sunlight forest",
-    "serene mountain lake",
-    "soft flower bloom garden",
-    "quiet river stream water",
-    "warm sunset golden hour",
-    "morning dew green leaves",
-    "zen garden meditation",
-    "autumn leaves falling breeze",
-    "meadow grass wind soft",
-    "lavender field purple calm",
-    "clouds drifting blue sky",
-    "waterfall mist tropical",
+    "nature peaceful landscape", "calm ocean waves beach",
+    "gentle sunlight forest", "serene mountain lake",
+    "soft flower bloom garden", "quiet river stream water",
+    "warm sunset golden hour", "morning dew green leaves",
+    "zen garden meditation", "autumn leaves falling breeze",
+    "meadow grass wind soft", "lavender field purple calm",
+    "clouds drifting blue sky", "waterfall mist tropical",
     "bamboo forest green peaceful",
 ]
 
-TTS_PROMPT = """You are a TTS emotional text formatter. Your job is to convert a short personal monologue into expressive, emotionally rich TTS-optimized text.
-Rules:
-
-Keep the original meaning and emotion 100%
-Replace punctuation with natural pauses: use ... for short pause, line break for medium pause, empty line for long pause
-Remove markdown, symbols, parentheses, brackets
-Split long sentences into shorter breath-sized chunks
-Add emotional emphasis words naturally into the flow:
-
-Softness/sadness: thật sự... mà... ấy... nhỉ... thôi... vậy đó... chứ sao... buồn lắm... khó lắm... nặng lòng lắm... biết làm sao giờ...
-Warmth/comfort: nào... nhé... mà... đấy... thương lắm... hiểu mà... không sao đâu... có tôi đây... yên tâm đi... ổn thôi mà...
-Sighing/reflection: ừ thì... biết là... thế mà... nghĩ lại thấy... cũng lạ nhỉ... mà thôi... kệ đi... thôi thì... rốt cuộc là... nhìn lại mới thấy...
-Encouragement: cố lên... được mà... nhất định... tin tôi đi... làm được... không bỏ cuộc nhé... từng bước thôi... chậm mà chắc... ngày mai sẽ khác... còn nhiều lắm phía trước...
-Longing/missing: nhớ lắm... xa rồi mà vẫn... sao quên được... cứ nghĩ mãi... in sâu trong lòng... dù đã lâu...
-Tired/overwhelmed: mệt lắm rồi... kiệt sức rồi... cố mãi cũng... không còn sức... đến giới hạn rồi... buông ra thôi...
-Acceptance/letting go: thôi thì... chấp nhận vậy... dù sao... cũng đã qua... bình thản lại thôi... không giữ nữa...
-Hope/looking forward: biết đâu được... hy vọng mà... rồi sẽ ổn... còn ngày mai... chờ xem nhé... sẽ tới thôi...
-
-
-Do NOT overuse — max 1 emphasis word per 2 sentences
-Match the emotional tone of the input (sad, hopeful, tired, warm, nostalgic...)
-Output plain text only, no explanation
+# Prompt rút gọn — bỏ danh sách emphasis dài, giữ instruction chính
+TTS_PROMPT_SHORT = """Convert this Vietnamese monologue into TTS-optimized text.
+- Replace punctuation with pauses: ... short, line break medium, empty line long
+- Split sentences into breath-sized chunks
+- Add 1-2 emotional emphasis words (nhé, thôi, mà, đấy, đâu, cố lên, thôi thì) naturally
+- Max 1 emphasis per 2 sentences. Tone: warm, hopeful.
+- Plain text only, no explanation.
 
 Input:
-{user_text}
-Output:
-TTS-ready plain text with natural emotional emphasis."""
+{text}
+
+Output:"""
 
 
 def run(cmd, timeout=60):
@@ -74,54 +52,49 @@ def run(cmd, timeout=60):
     return r.stdout.strip(), r.stderr.strip(), r.returncode
 
 
-# === STATE TRACKING ===
+# === STATE ===
 
 def load_used_videos():
-    """Load danh sách video ID đã dùng từ state file."""
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
     except:
         return []
 
-
 def save_used_videos(ids):
-    """Lưu danh sách video ID đã dùng vào state file."""
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(ids, f)
 
 
-# === AI ===
+# === AI (Qwen 3.5 via Ollama local) ===
 
 def call_qwen(prompt):
-    """Gọi qwen3.5:cloud qua Ollama local."""
     payload = json.dumps({
-        "model": OLLAMA_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False, "think": False,
-        "options": {"temperature": 0.7},
+        "model": OLLAMA_MODEL, "messages": [{"role": "user", "content": prompt}],
+        "stream": False, "think": False, "options": {"temperature": 0.7},
     })
     tmpf = f"/tmp/_qwen_{os.getpid()}.json"
     with open(tmpf, "w") as f:
         f.write(payload)
     try:
         r = subprocess.run(
-            ["curl", "-s", "--max-time", "30", "-d", f"@{tmpf}", f"{OLLAMA_BASE}/api/chat"],
-            capture_output=True, text=True, timeout=35
+            ["curl", "-s", "--max-time", "60", "-d", f"@{tmpf}", f"{OLLAMA_BASE}/api/chat"],
+            capture_output=True, text=True, timeout=65
         )
         if r.returncode != 0 or not r.stdout:
+            print(f"    ⚠️ Qwen: rc={r.returncode}, {r.stderr[:80] if r.stderr else ''}")
             return ""
         return json.loads(r.stdout)["message"]["content"].strip()
-    except:
+    except Exception as e:
+        print(f"    ⚠️ Qwen exception: {e}")
         return ""
     finally:
         os.unlink(tmpf)
 
 
 def format_tts_text(raw_text):
-    """AI format text → TTS-optimized với emotional emphasis."""
-    prompt = TTS_PROMPT.replace("{user_text}", raw_text)
+    prompt = TTS_PROMPT_SHORT.replace("{text}", raw_text)
     result = call_qwen(prompt)
     return result if result else raw_text
 
@@ -129,13 +102,13 @@ def format_tts_text(raw_text):
 # === PEXELS ===
 
 def pexels_search(query, per_page=15):
-    """Search Pexels API."""
     params = urllib.parse.urlencode({
-        "query": query, "per_page": per_page,
-        "orientation": "portrait", "size": "large",
+        "query": query, "per_page": per_page, "orientation": "portrait", "size": "large",
     })
-    cmd = f'curl -s --max-time 15 -H "Authorization: {PEXELS_KEY}" "https://api.pexels.com/videos/search?{params}"'
-    out, _, rc = run(cmd)
+    out, _, rc = run(
+        f'curl -s --max-time 15 -H "Authorization: {PEXELS_KEY}" '
+        f'"https://api.pexels.com/videos/search?{params}"'
+    )
     if rc != 0 or not out:
         return []
     try:
@@ -145,13 +118,11 @@ def pexels_search(query, per_page=15):
 
 
 def pick_new_videos(videos, used_ids, max_n=3):
-    """Lọc video portrait ≥1080p, bỏ qua used_ids, chọn duration dài nhất."""
     valid = []
     for v in videos:
         if v["id"] in used_ids:
             continue
-        h = v.get("height", 0)
-        w = v.get("width", 0)
+        h, w = v.get("height", 0), v.get("width", 0)
         if h >= 1080 and h > w:
             valid.append(v)
     valid.sort(key=lambda v: v.get("duration", 0), reverse=True)
@@ -159,9 +130,8 @@ def pick_new_videos(videos, used_ids, max_n=3):
 
 
 def get_best_file(video):
-    files = video.get("video_files", [])
     best, best_px = None, 0
-    for f in files:
+    for f in video.get("video_files", []):
         px = f.get("width", 0) * f.get("height", 0)
         if px > best_px:
             best_px = px
@@ -171,8 +141,7 @@ def get_best_file(video):
 
 def download_video(url, outpath):
     print(f"  ⬇ Downloading...")
-    cmd = f'curl -sL --max-time 60 -o "{outpath}" "{url}"'
-    _, _, rc = run(cmd, timeout=70)
+    _, _, rc = run(f'curl -sL --max-time 60 -o "{outpath}" "{url}"', timeout=70)
     if rc != 0:
         return False
     print(f"  ✅ {os.path.getsize(outpath)/1_000_000:.1f} MB")
@@ -183,15 +152,8 @@ def download_video(url, outpath):
 
 def generate_tts(text, outpath):
     payload = json.dumps({
-        "text": text,
-        "model_id": ELEVENLABS_MODEL,
-        "voice_settings": {
-            "stability": 0.25,
-            "similarity_boost": 0.5,
-            "style": 0.4,
-            "speed": 1.1,
-            "use_speaker_boost": True,
-        },
+        "text": text, "model_id": ELEVENLABS_MODEL,
+        "voice_settings": {"stability": 0.25, "similarity_boost": 0.5, "style": 0.4, "speed": 1.1, "use_speaker_boost": True},
     }).encode()
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}?language_code=vi&output_format=mp3_44100_128"
     req = urllib.request.Request(url, data=payload)
@@ -205,6 +167,73 @@ def generate_tts(text, outpath):
     except Exception as e:
         print(f"  ❌ TTS error: {e}")
         return False
+
+
+# === WHISPER SUBTITLE ===
+
+def create_subtitle(audio_path, out_ass, video_start_offset=0.5):
+    """Dùng Whisper transcribe audio → tạo file .ass subtitle."""
+    import whisper
+
+    print(f"  🎧 Whisper transcribing (model=small)...")
+    model = whisper.load_model("small")
+    result = model.transcribe(audio_path, word_timestamps=True, language="vi")
+
+    # Gộp words thành câu dựa trên pauses > 0.5s
+    segments = []
+    current_words = []
+    current_start = None
+
+    for seg in result.get("segments", []):
+        words = seg.get("words", [])
+        if not words:
+            continue
+
+        seg_start = words[0]["start"] + video_start_offset
+        seg_end = words[-1]["end"] + video_start_offset
+        text = seg["text"].strip()
+
+        if text:
+            segments.append({
+                "start": seg_start,
+                "end": seg_end,
+                "text": text,
+            })
+
+    # Viết file .ass
+    ass_header = """[Script Info]
+Title: 999 Lá Thư
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Helvetica Neue,44,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.5,1.5,2,20,20,60,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    with open(out_ass, "w") as f:
+        f.write(ass_header)
+        for seg in segments:
+            start_ts = format_ass_time(seg["start"])
+            end_ts = format_ass_time(seg["end"])
+            text = seg["text"].replace("\n", "\\N")
+            f.write(f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{text}\n")
+
+    print(f"  ✅ Subtitle: {len(segments)} lines → {out_ass}")
+    return out_ass
+
+
+def format_ass_time(seconds):
+    """Convert seconds → ASS timestamp H:MM:SS.cc"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
 
 
 # === VIDEO ===
@@ -225,11 +254,10 @@ def concat_videos(paths, outpath):
     with open(tf, "w") as f:
         for p in paths:
             f.write(f"file '{p}'\n")
-    rc = run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2]
-    return rc == 0
+    return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
 
 
-def compose_tiktok(video_path, audio_path, outpath, fade_sec=1.0):
+def compose_tiktok(video_path, audio_path, outpath, subtitle_ass=None, fade_sec=1.0):
     vid_dur = get_duration(video_path)
     aud_dur = get_duration(audio_path)
     print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s")
@@ -251,12 +279,23 @@ def compose_tiktok(video_path, audio_path, outpath, fade_sec=1.0):
         run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{wv}"')
 
     fade_start = total_dur - fade_sec
+
+    # Video filter chain
+    vf = (
+        f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
+        f"fps=30,format=yuv420p"
+    )
+
+    # Thêm subtitle filter nếu có
+    if subtitle_ass and os.path.exists(subtitle_ass):
+        vf += f",ass={subtitle_ass}"
+        print(f"  📝 Subtitle burn-in: {subtitle_ass}")
+
     cmd = (
         f'ffmpeg -y -i "{wv}" -i "{audio_path}" '
         f'-filter_complex '
-        f'"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,'
-        f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
-        f'fps=30,format=yuv420p[v];'
+        f'"[0:v]{vf}[v];'
         f'[1:a]adelay=500|500[a]" '
         f'-map "[v]" -map "[a]" '
         f'-c:v libx264 -preset fast -crf 20 '
@@ -266,7 +305,7 @@ def compose_tiktok(video_path, audio_path, outpath, fade_sec=1.0):
         f'-shortest '
         f'"{outpath}"'
     )
-    _, err, rc = run(cmd, timeout=120)
+    _, err, rc = run(cmd, timeout=180)
     if rc != 0:
         print(f"  ❌ Compose: {err[:300]}")
         return False
@@ -298,7 +337,7 @@ def pipeline(so_thu, raw_content):
     used_ids = load_used_videos()
     print(f"  📋 Used videos: {len(used_ids)} IDs tracked")
 
-    # ── Step 1: Tìm video Pexels nature (keywords cố định, tránh trùng) ──
+    # ── Step 1: Pexels search (keywords cố định, tránh trùng) ──
     all_videos = []
     for kw in PEXELS_QUERIES:
         print(f"  🔍 Pexels: '{kw}'")
@@ -315,8 +354,8 @@ def pipeline(so_thu, raw_content):
         print("❌ Không tìm được video mới! Reset state file?")
         return None
 
-    # ── Step 2: AI format TTS text ──
-    print(f"  ✍️ Formatting text for TTS (qwen3.5:cloud)...")
+    # ── Step 2: AI format TTS text (prompt ngắn) ──
+    print(f"  ✍️ Formatting text for TTS (qwen3.5:cloud, short prompt)...")
     tts_text = format_tts_text(raw_content)
     print(f"  📝 Formatted ({len(tts_text)} chars): {tts_text[:120]}...")
 
@@ -328,7 +367,11 @@ def pipeline(so_thu, raw_content):
     aud_dur = get_duration(audio_path)
     print(f"  ✅ TTS: {os.path.getsize(audio_path)/1000:.0f} KB, {aud_dur:.1f}s")
 
-    # ── Step 4: Download video đến khi đủ duration ──
+    # ── Step 4: Whisper subtitle ──
+    subtitle_ass = f"{outdir}/subtitle.ass"
+    create_subtitle(audio_path, subtitle_ass, video_start_offset=0.5)
+
+    # ── Step 5: Download video đến khi đủ duration ──
     target_dur = aud_dur + 5.0
     downloaded, total_vid_dur = [], 0
     for v in all_videos:
@@ -345,23 +388,23 @@ def pipeline(so_thu, raw_content):
 
     print(f"  📦 {len(downloaded)} videos, total {total_vid_dur:.1f}s (need > {target_dur:.1f}s)")
 
-    # ── Step 5: Concat + compose ──
+    # ── Step 6: Concat + compose (có subtitle burn-in) ──
     combined = f"{outdir}/combined.mp4"
     if not concat_videos(downloaded, combined):
         print("❌ Concat failed!")
         return None
 
     output_path = f"{outdir}/tiktok.mp4"
-    if not compose_tiktok(combined, audio_path, output_path):
+    if not compose_tiktok(combined, audio_path, output_path, subtitle_ass=subtitle_ass):
         return None
 
-    # ── Step 6: Upload CDN ──
+    # ── Step 7: Upload CDN ──
     print(f"  ☁️ Uploading CDN...")
     cdn_url = upload_cdn(output_path)
     if not cdn_url:
         return f"MEDIA:{output_path}"
 
-    # ── Step 7: Save used video IDs ──
+    # ── Step 8: Save used video IDs ──
     for v in all_videos:
         if v["id"] not in used_ids:
             used_ids.append(v["id"])
