@@ -186,12 +186,11 @@ def alignment_to_segments(alignment, tts_text):
                 "text": sent["raw"],
                 "blank": False
             })
-            # Chèn blank nếu có gap đến câu sau
+            # Luôn chèn blank giữa các câu (min 0.3s)
             if wi < len(words):
-                gap = words[wi]["start"] - sent_words[-1]["end"]
-                if gap > 0.3:
-                    segments.append({"start": sent_words[-1]["end"], "end": words[wi]["start"],
-                                     "text": "", "blank": True})
+                gap_end = max(sent_words[-1]["end"] + 0.3, words[wi]["start"])
+                segments.append({"start": sent_words[-1]["end"], "end": gap_end,
+                                 "text": "", "blank": True})
 
     print(f"  ✅ {len(segments)} segments ({len(raw_sentences)} câu + blanks)")
     return segments
