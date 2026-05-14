@@ -27,8 +27,10 @@ PEXELS_QUERIES = [
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
 
-SUB_FONT = "/System/Library/Fonts/Helvetica.ttc"
+SUB_FONT = "/System/Library/Fonts/SFNS.ttf"  # SF Pro
 SUB_SIZE = 44
+SUB_SIDE_PAD = 100  # padding 2 bên tránh TikTok UI
+SUB_BOTTOM_MARGIN = 140  # đáy margin để không bị che
 
 
 def run(cmd, timeout=60):
@@ -139,29 +141,49 @@ def get_whisper_segments(audio_path):
 def render_subtitle_video(segments, outpath, width=1080, height=1920):
     """Tạo video trong suốt với subtitle xuất hiện/tắt theo thời gian."""
     from PIL import Image, ImageDraw, ImageFont
-    try: font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
-    except: font = ImageFont.load_default()
+
+    try:
+        font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
+    except:
+        font = ImageFont.load_default()
 
     tmpdir = outpath + ".tmp"
     os.makedirs(tmpdir, exist_ok=True)
     png_paths = []
 
+    text_width = width - 2 * SUB_SIDE_PAD  # 880px cho nội dung
+
     for i, seg in enumerate(segments):
+        # Wrap text theo text_width
+        lines = wrap_text(seg["text"], font, text_width)
+
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        bbox = draw.textbbox((0, 0), seg["text"], font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x, y = (width - tw) / 2, height - th - 120
-        # Outline
-        for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-            draw.text((x + dx * 2, y + dy * 2), seg["text"], font=font, fill=(0, 0, 0, 180))
-        draw.text((x, y), seg["text"], font=font, fill=(255, 255, 255, 255))
+
+        # Tính tổng chiều cao các dòng
+        line_heights = [draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1] for line in lines]
+        total_h = sum(line_heights) + (len(lines) - 1) * 8  # line spacing 8px
+
+        y = height - total_h - SUB_BOTTOM_MARGIN
+
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            lw = bbox[2] - bbox[0]
+            lh = bbox[3] - bbox[1]
+            x = (width - lw) / 2  # canh giữa
+
+            # Outline
+            for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
+                draw.text((x + dx * 2, y + dy * 2), line, font=font, fill=(0, 0, 0, 180))
+            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+
+            y += lh + 8
+
         pp = f"{tmpdir}/sub_{i:03d}.png"
         img.save(pp)
         png_paths.append(pp)
 
-    # Tạo video từ PNGs: mỗi PNG hiện trong khoảng thời gian của segment
-    # Dùng concat demuxer với duration cho mỗi frame
+    # Tạo video từ PNGs
     concat_file = outpath + ".sub_concat.txt"
     with open(concat_file, "w") as f:
         for i, (seg, pp) in enumerate(zip(segments, png_paths)):
@@ -169,7 +191,6 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
             f.write(f"file '{pp}'\n")
             f.write(f"duration {dur:.3f}\n")
 
-    # Tạo fade 0.1s giữa các segment để mượt
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
         f'-vf "fps=30,format=rgba" '
@@ -183,6 +204,38 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
 
     print(f"  ✅ Subtitle video: {os.path.getsize(outpath)/1_000_000:.1f} MB")
     return outpath
+
+
+def wrap_text(text, font, max_width):
+    """Wrap text thành nhiều dòng, giới hạn theo max_width pixel."""
+    words = text.split()
+    lines = []
+    current_line = ""
+
+    for word in words:
+        test = f"{current_line} {word}".strip() if current_line else word
+        # Dùng textbbox thay textlength (PIL mới)
+        try:
+            bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), test, font=font)
+            w = bbox[2] - bbox[0]
+        except:
+            # Fallback: dùng font.getlength hoặc textlength cũ
+            try:
+                w = font.getlength(test)
+            except:
+                w = len(test) * (font.size * 0.6)  # rough estimate
+
+        if w <= max_width:
+            current_line = test
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines if lines else [text]
 
 
 def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
