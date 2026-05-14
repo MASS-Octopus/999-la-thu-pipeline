@@ -117,13 +117,13 @@ def generate_tts_with_timestamps(text, outpath):
         print(f"  ❌ TTS error: {e}"); return False, None
 
 
-def alignment_to_segments(alignment, audio_path=None):
-    """Convert ElevenLabs char-level alignment → segments, phát hiện silence gaps."""
+def alignment_to_segments(alignment, tts_text):
+    """Chia segments theo từng câu (phân cách bởi \\n\\n trong TTS text)."""
     chars = alignment["characters"]
     starts = alignment["character_start_times_seconds"]
     ends = alignment["character_end_times_seconds"]
 
-    # Build words, skip punctuation/whitespace-only tokens (., ..., \n)
+    # Build words từ alignment
     words = []
     word_chars = []
     word_start = None
@@ -133,14 +133,10 @@ def alignment_to_segments(alignment, audio_path=None):
         if ch in " \n.":
             if word_chars:
                 words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
-                word_chars = []
-                word_start = None
-                word_end = None
+                word_chars = []; word_start = None; word_end = None
         else:
-            if word_start is None:
-                word_start = starts[i]
-            word_chars.append(ch)
-            word_end = ends[i]
+            if word_start is None: word_start = starts[i]
+            word_chars.append(ch); word_end = ends[i]
 
     if word_chars:
         words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
@@ -155,40 +151,50 @@ def alignment_to_segments(alignment, audio_path=None):
             skip.add(i + 1)
     words = [w for j, w in enumerate(words) if j not in skip]
 
-    # Merge 2-3 words per segment, chèn blank khi gap giữa words > 0.3s
-    merged = []
-    buf = []
-    for i, w in enumerate(words):
-        # Check gap từ word trước đó
-        if buf:
-            gap = w["start"] - buf[-1]["end"]
-            if gap > 0.3:
-                # Force flush current buf, insert blank
-                merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
-                               "text": " ".join(wi["text"] for wi in buf), "blank": False})
-                merged.append({"start": buf[-1]["end"], "end": w["start"], "text": "", "blank": True})
-                buf = []
+    # Split TTS text thành các câu (phân cách bởi \\n\\n)
+    raw_sentences = [s.strip() for s in tts_text.split("\n\n") if s.strip()]
+    # Chuẩn hóa text câu (bỏ ... và khoảng trắng thừa) để match với words
+    def norm(s):
+        import re
+        return re.sub(r'\s+', ' ', s.replace("...", " ")).strip()
 
-        buf.append(w)
-        if len(buf) >= 3:
-            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
-                           "text": " ".join(wi["text"] for wi in buf), "blank": False})
-            buf = []
+    sentences = [{"raw": s, "norm": norm(s)} for s in raw_sentences]
 
-    if buf:
-        merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
-                       "text": " ".join(w["text"] for w in buf), "blank": False})
+    # Match words vào từng câu
+    segments = []
+    wi = 0
+    for sent in sentences:
+        # Tìm các words khớp với câu này
+        sent_words = []
+        remaining = sent["norm"]
+        while wi < len(words) and remaining:
+            w = words[wi]
+            # So khớp prefix
+            if remaining.startswith(w["text"]):
+                sent_words.append(w)
+                remaining = remaining[len(w["text"]):].lstrip()
+                wi += 1
+            else:
+                # Có thể alignment bỏ sót 1 từ, thử skip 1 word
+                wi += 1
+                break
 
-    # Remove consecutive blanks, merge gap blanks
-    cleaned = []
-    for s in merged:
-        if s["blank"] and cleaned and cleaned[-1]["blank"]:
-            cleaned[-1]["end"] = s["end"]
-        else:
-            cleaned.append(s)
+        if sent_words:
+            segments.append({
+                "start": sent_words[0]["start"],
+                "end": sent_words[-1]["end"],
+                "text": sent["raw"],
+                "blank": False
+            })
+            # Chèn blank nếu có gap đến câu sau
+            if wi < len(words):
+                gap = words[wi]["start"] - sent_words[-1]["end"]
+                if gap > 0.3:
+                    segments.append({"start": sent_words[-1]["end"], "end": words[wi]["start"],
+                                     "text": "", "blank": True})
 
-    print(f"  ✅ {len(cleaned)} subtitle segments")
-    return cleaned
+    print(f"  ✅ {len(segments)} segments ({len(raw_sentences)} câu + blanks)")
+    return segments
 
 
 def get_duration(fp):
@@ -430,8 +436,8 @@ def pipeline(so_thu, raw_content):
     aud_dur = get_duration(ap)
     print(f"  ✅ TTS: {os.path.getsize(ap)/1000:.0f} KB, {aud_dur:.1f}s")
 
-    # 4. Alignment → segments
-    segments = alignment_to_segments(alignment)
+    # 4. Alignment → segments (theo từng câu)
+    segments = alignment_to_segments(alignment, tts_text)
 
     # 5. Render subtitle video
     sub_video = f"{outdir}/subtitle.mov"
