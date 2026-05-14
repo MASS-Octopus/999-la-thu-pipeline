@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-999 Lá Thư — TikTok Video Pipeline (v5-final)
+999 Lá Thư — TikTok Video Pipeline (v6)
 - Format TTS thủ công (emotional emphasis rules)
-- Whisper word timestamps → PIL render subtitle PNGs
-- Tạo subtitle video từ PNGs → ffmpeg overlay 1 lần
+- ElevenLabs with-timestamps → alignment chính xác tuyệt đối
+- PIL render subtitle PNGs → ffmpeg overlay 1 lần
 """
 
 import json, os, sys, subprocess, time
@@ -99,18 +99,63 @@ def download_video(url, outpath):
     return True
 
 
-# === ELEVENLABS ===
+# === ELEVENLABS (with-timestamps) ===
 
-def generate_tts(text, outpath):
+def generate_tts_with_timestamps(text, outpath):
+    """Gọi ElevenLabs TTS với alignment timestamps. Trả về (bool, alignment_dict)."""
     payload = json.dumps({"text": text, "model_id": ELEVENLABS_MODEL, "voice_settings": {"stability": 0.25, "similarity_boost": 0.5, "style": 0.4, "speed": 1.1, "use_speaker_boost": True}}).encode()
-    req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}?language_code=vi&output_format=mp3_44100_128", data=payload)
+    req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}/with-timestamps?language_code=vi&output_format=mp3_44100_128", data=payload)
     req.add_header("xi-api-key", ELEVENLABS_KEY); req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            with open(outpath, "wb") as f: f.write(resp.read())
-        return True
+            data = json.load(resp)
+            import base64
+            audio_bytes = base64.b64decode(data["audio_base64"])
+            with open(outpath, "wb") as f: f.write(audio_bytes)
+        return True, data.get("alignment")
     except Exception as e:
-        print(f"  ❌ TTS error: {e}"); return False
+        print(f"  ❌ TTS error: {e}"); return False, None
+
+
+def alignment_to_segments(alignment):
+    """Convert ElevenLabs char-level alignment → word-level segments."""
+    chars = alignment["characters"]
+    starts = alignment["character_start_times_seconds"]
+    ends = alignment["character_end_times_seconds"]
+
+    segments = []
+    word_chars = []
+    word_start = None
+
+    for i, ch in enumerate(chars):
+        if ch == " ":
+            if word_chars:
+                segments.append({"start": word_start, "end": ends[i-1], "text": "".join(word_chars)})
+                word_chars = []
+                word_start = None
+        else:
+            if word_start is None:
+                word_start = starts[i]
+            word_chars.append(ch)
+
+    if word_chars:
+        segments.append({"start": word_start, "end": ends[-1], "text": "".join(word_chars)})
+
+    # Merge words thành các segment dễ đọc (group 3-5 từ mỗi segment)
+    merged = []
+    buf = []
+    for w in segments:
+        buf.append(w)
+        # Group khi đủ 4 từ hoặc có dấu câu kết thúc
+        text = " ".join(w["text"] for w in buf)
+        if len(buf) >= 4 or any(text.rstrip().endswith(c) for c in ".!?,:;"):
+            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": text})
+            buf = []
+    if buf:
+        merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": " ".join(w["text"] for w in buf)})
+
+    print(f"  ✅ {len(merged)} subtitle segments")
+    return merged
 
 
 def get_duration(fp):
@@ -124,22 +169,6 @@ def concat_videos(paths, outpath):
     with open(tf, "w") as f:
         for p in paths: f.write(f"file '{p}'\n")
     return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
-
-
-# === WHISPER → SUBTITLE VIDEO ===
-
-def get_whisper_segments(audio_path):
-    import whisper
-    print(f"  🎧 Whisper transcribing (model=small)...")
-    model = whisper.load_model("small")
-    result = model.transcribe(audio_path, word_timestamps=True, language="vi")
-    segments = []
-    for seg in result.get("segments", []):
-        t = seg["text"].strip()
-        if t: segments.append({"start": seg["start"], "end": seg["end"], "text": t})
-    print(f"  ✅ {len(segments)} segments")
-    return segments
-
 
 def render_subtitle_video(segments, outpath, width=1080, height=1920):
     """Tạo video trong suốt với subtitle xuất hiện/tắt theo thời gian."""
@@ -341,15 +370,16 @@ def pipeline(so_thu, raw_content):
     tts_text = format_tts_manual(raw_content)
     print(f"  📝 Formatted ({len(tts_text)} chars): {tts_text[:120]}...")
 
-    # 3. ElevenLabs
+    # 3. ElevenLabs with timestamps
     ap = f"{outdir}/tts.mp3"
-    print(f"  🎙 ElevenLabs...")
-    if not generate_tts(tts_text, ap): return
+    print(f"  🎙 ElevenLabs (with timestamps)...")
+    ok, alignment = generate_tts_with_timestamps(tts_text, ap)
+    if not ok: return
     aud_dur = get_duration(ap)
     print(f"  ✅ TTS: {os.path.getsize(ap)/1000:.0f} KB, {aud_dur:.1f}s")
 
-    # 4. Whisper segments
-    segments = get_whisper_segments(ap)
+    # 4. Alignment → segments
+    segments = alignment_to_segments(alignment)
 
     # 5. Render subtitle video
     sub_video = f"{outdir}/subtitle.mov"
