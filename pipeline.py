@@ -33,7 +33,7 @@ SUB_SIDE_PAD = 100
 SUB_OUTLINE = 3
 SUB_BG_ALPHA = 0  # bỏ overlay nền
 FADE_MS = 0.2  # fade in/out 200ms
-VIDEO_START_DELAY = 2.0  # text + audio bắt đầu sau 2s
+VIDEO_START_DELAY = 1.0  # text + audio bắt đầu sau 1s
 VIDEO_END_PAD = 3.0  # video chạy thêm 3s sau giọng đọc
 
 
@@ -190,11 +190,20 @@ def get_duration(fp):
 
 
 def concat_videos(paths, outpath):
-    if len(paths) == 1: run(f'cp "{paths[0]}" "{outpath}"'); return True
+    """Concat nhiều video bằng concat demuxer + re-encode để đảm bảo codec đồng nhất."""
+    if len(paths) == 1:
+        run(f'cp "{paths[0]}" "{outpath}"')
+        return True
     tf = outpath + ".concat.txt"
     with open(tf, "w") as f:
-        for p in paths: f.write(f"file '{p}'\n")
-    return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
+        for p in paths:
+            f.write(f"file '{p}'\n")
+    # Re-encode để tránh lỗi codec không đồng nhất
+    return run(
+        f'ffmpeg -y -f concat -safe 0 -i "{tf}" '
+        f'-c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k '
+        f'-movflags +faststart "{outpath}"'
+    )[2] == 0
 
 # === HTML SUBTITLE RENDERER (Playwright) ===
 
@@ -375,8 +384,8 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
 
 
 def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
-    vid_dur = get_duration(video_path)
     aud_dur = get_duration(audio_path)
+    vid_dur = get_duration(video_path)
     print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s")
     if vid_dur <= 0 or aud_dur <= 0: return False
 
@@ -384,12 +393,12 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
     delay_ms = int(VIDEO_START_DELAY * 1000)
     fade_start = total_dur - fade_sec
 
-    # Loop video trực tiếp trong filter_complex (không cần concat)
+    if vid_dur < total_dur:
+        print(f"  ⚠️  Video quá ngắn ({vid_dur:.1f}s < {total_dur:.1f}s), cần concat thêm")
+        return False
+
     cmd = (
-        f'ffmpeg -y '
-        f'-stream_loop -1 -i "{video_path}" '
-        f'-i "{audio_path}" '
-        f'-i "{sub_video}" '
+        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" -i "{sub_video}" '
         f'-filter_complex '
         f'"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,'
         f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
@@ -458,8 +467,11 @@ def pipeline(so_thu, raw_content):
     sub_video = f"{outdir}/subtitle.mov"
     if not render_subtitle_html(sentences, segments, sub_video): return
 
-    # 6. Download videos
-    target = aud_dur + 5.0; dl, tdur = [], 0
+    # 6. Download videos — concat đủ dài hơn total_dur
+    total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
+    target = total_dur + 3.0  # buffer 3s để chắc chắn đủ
+
+    dl, tdur = [], 0
     for v in all_videos:
         if tdur >= target: break
         fp = f"{outdir}/vid_{v['id']}.mp4"
@@ -468,9 +480,15 @@ def pipeline(so_thu, raw_content):
         time.sleep(0.5)
     print(f"  📦 {len(dl)} videos, total {tdur:.1f}s (need > {target:.1f}s)")
 
-    # 7. Concat → compose with subtitle
+    # 7. Concat → re-encode combined video (đủ dài) → compose + cắt bằng -t
     comb = f"{outdir}/combined.mp4"
     if not concat_videos(dl, comb): return print("❌ Concat failed!")
+    
+    comb_dur = get_duration(comb)
+    if comb_dur < total_dur:
+        print(f"  ❌ Combined video quá ngắn: {comb_dur:.1f}s < {total_dur:.1f}s")
+        return
+    
     op = f"{outdir}/tiktok.mp4"
     if not compose_tiktok(comb, ap, sub_video, op): return
 
