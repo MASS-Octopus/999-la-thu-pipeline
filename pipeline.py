@@ -51,10 +51,108 @@ def save_used_videos(ids):
     json.dump(ids, open(STATE_FILE, "w"))
 
 
-# === FORMAT TTS (thủ công theo rules emotional emphasis) ===
+# === FORMAT TTS (LLM via Ollama, manual fallback) ===
+
+TTS_FORMAT_PROMPT = """You are a TTS emotional text formatter. Your job is to convert a short personal monologue into expressive, emotionally rich TTS-optimized text — written as if a close friend is speaking warmly to their best friend.
+
+Rules:
+- Keep the original meaning and emotion 100%
+- Write as a close friend speaking to their best friend — always use full natural sentences with subject and verb. Người nói xưng "tôi/mình", gọi người nghe là "bạn/cậu". Never drop the subject or verb. Avoid fragment phrases that sound like captions or slogans.
+- Replace punctuation with natural pauses: use ... for short pause, line break for medium pause, empty line for long pause
+- Remove markdown, symbols, parentheses, brackets
+- Split long sentences into shorter breath-sized chunks
+- Add emotional emphasis words naturally into the flow:
+  - Softness/sadness: thật sự... mà... ấy... nhỉ... thôi... vậy đó... chứ sao... buồn lắm... khó lắm... nặng lòng lắm... biết làm sao giờ...
+  - Warmth/comfort: nào... nhé... mà... đấy... thương lắm... hiểu mà... không sao đâu... có tôi đây... yên tâm đi... ổn thôi mà...
+  - Sighing/reflection: ừ thì... biết là... thế mà... nghĩ lại thấy... cũng lạ nhỉ... mà thôi... kệ đi... thôi thì... rốt cuộc là... nhìn lại mới thấy...
+  - Encouragement: cố lên... được mà... nhất định... tin tôi đi... làm được... không bỏ cuộc nhé... từng bước thôi... chậm mà chắc... ngày mai sẽ khác... còn nhiều lắm phía trước...
+  - Longing/missing: nhớ lắm... xa rồi mà vẫn... sao quên được... cứ nghĩ mãi... in sâu trong lòng... dù đã lâu...
+  - Tired/overwhelmed: mệt lắm rồi... kiệt sức rồi... cố mãi cũng... không còn sức... đến giới hạn rồi... buông ra thôi...
+  - Acceptance/letting go: thôi thì... chấp nhận vậy... dù sao... cũng đã qua... bình thản lại thôi... không giữ nữa...
+  - Hope/looking forward: biết đâu được... hy vọng mà... rồi sẽ ổn... còn ngày mai... chờ xem nhé... sẽ tới thôi...
+- Do NOT overuse — max 1 emphasis word per 2 sentences
+- Match the emotional tone of the input (sad, hopeful, tired, warm, nostalgic...)
+- Output plain text only, no explanation
+
+Input: {text}
+
+Output: TTS-ready plain text, written as a warm friend speaking to their best friend, with natural emotional emphasis."""
+
+
+OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_MODEL = "qwen3-coder-next:cloud"  # model chính cho format text
+
+
+def _call_ollama_format(prompt):
+    """Gọi Ollama API để format raw text → emotional TTS text."""
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.7, "num_predict": 1024}
+    }).encode()
+    req = urllib.request.Request(OLLAMA_URL, data=payload)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            return json.load(resp).get("message", {}).get("content", "")
+    except Exception as e:
+        print(f"  ⚠️ Ollama format failed: {e}")
+        return None
+
+
+def _parse_formatted_text(text):
+    """Parse LLM output thành list sentences. Tách theo dấu câu + line breaks."""
+    import re
+    # Clean markdown code fences
+    text = re.sub(r'^```[^\n]*\n', '', text)
+    text = re.sub(r'\n```\s*$', '', text)
+    text = text.strip()
+    
+    # Split by sentence-ending punctuation + line breaks
+    # First split by explicit line breaks (LLM uses these for pauses)
+    blocks = re.split(r'\n{2,}', text)  # empty line = long pause
+    sentences = []
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # Further split by single newlines
+        sub = re.split(r'\n', block)
+        sentences.extend(s.strip() for s in sub if s.strip())
+    
+    # Ensure each sentence ends with punctuation
+    final = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        # Add period if missing
+        if not s[-1] in '.!?…':
+            s += '.'
+        final.append(s)
+    
+    return final
+
+
+def format_tts_ai(raw_text):
+    """Dùng LLM format raw text → emotional TTS text + sentences.
+    Fallback về manual nếu LLM fail."""
+    prompt = TTS_FORMAT_PROMPT.replace("{text}", raw_text)
+    result = _call_ollama_format(prompt)
+    
+    if result:
+        sentences = _parse_formatted_text(result)
+        if sentences:
+            tts_text = " ".join(sentences)
+            return tts_text, sentences
+    
+    print("  ⚠️ LLM format failed → fallback manual")
+    return format_tts_manual(raw_text)
+
 
 def format_tts_manual(raw_text):
-    """Thêm ... pause, emotional emphasis words cho TTS. Trả về (tts_text, sentences)."""
+    """Fallback: hardcoded format cho thư số 1. Dùng khi LLM không khả dụng."""
     text = raw_text.replace("\n", " ").strip()
     
     sentences = [
@@ -190,18 +288,24 @@ def get_duration(fp):
 
 
 def concat_videos(paths, outpath):
-    """Concat nhiều video bằng concat demuxer + re-encode để đảm bảo codec đồng nhất."""
+    """Concat nhiều video (video-only, Pexels stock thường không có audio)."""
     if len(paths) == 1:
         run(f'cp "{paths[0]}" "{outpath}"')
         return True
-    tf = outpath + ".concat.txt"
-    with open(tf, "w") as f:
-        for p in paths:
-            f.write(f"file '{p}'\n")
-    # Re-encode để tránh lỗi codec không đồng nhất
+    
+    # Build filter_complex: chỉ concat video (audio từ TTS thêm sau)
+    inputs = " ".join(f'-i "{p}"' for p in paths)
+    n = len(paths)
+    
+    v_parts = [f"[{i}:v]setpts=PTS-STARTPTS,fps=30,format=yuv420p[v{i}]" for i in range(n)]
+    v_concat = "".join(f"[v{i}]" for i in range(n))
+    filter_complex = f"{';'.join(v_parts)};{v_concat}concat=n={n}:v=1:a=0[vout]"
+    
     return run(
-        f'ffmpeg -y -f concat -safe 0 -i "{tf}" '
-        f'-c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k '
+        f'ffmpeg -y {inputs} '
+        f'-filter_complex "{filter_complex}" '
+        f'-map "[vout]" '
+        f'-c:v libx264 -preset ultrafast -crf 23 '
         f'-movflags +faststart "{outpath}"'
     )[2] == 0
 
@@ -416,10 +520,10 @@ def pipeline(so_thu, raw_content):
         if len(all_videos) >= 5: break
     if not all_videos: return print("❌ Không tìm được video!")
 
-    # 2. Format TTS (thủ công) → trả về (tts_text, sentences)
-    print(f"  ✍️ Formatting TTS text...")
-    tts_text, sentences = format_tts_manual(raw_content)
-    print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:120]}...")
+    # 2. Format TTS (LLM via Ollama, manual fallback) → trả về (tts_text, sentences)
+    print(f"  ✍️ Formatting TTS text (LLM)...")
+    tts_text, sentences = format_tts_ai(raw_content)
+    print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
 
     # 3. ElevenLabs with timestamps
     ap = f"{outdir}/tts.mp3"
