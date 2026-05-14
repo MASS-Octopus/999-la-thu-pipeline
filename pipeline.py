@@ -53,22 +53,19 @@ def save_used_videos(ids):
 # === FORMAT TTS (thủ công theo rules emotional emphasis) ===
 
 def format_tts_manual(raw_text):
-    """Thêm ... pause, line breaks, emotional emphasis words cho TTS."""
-    # Thư số 1: hopeful/warm tone → dùng nhé, thôi, mà, đấy, đâu, cố lên
+    """Thêm ... pause, emotional emphasis words cho TTS. Trả về (tts_text, sentences)."""
     text = raw_text.replace("\n", " ").strip()
     
     sentences = [
-        "Kể từ hôm nay... mỗi ngày hãy cười lên nhé",
-        "",
-        "trên đời này... trừ việc sinh tử ra... còn lại đều là chuyện nhỏ thôi",
-        "",
-        "cho dù gặp phải chuyện buồn gì đi chăng nữa... cũng đừng tự làm khó mình mà",
-        "cho dù xảy ra chuyện rắc rối đến thế nào... cũng chẳng cần phải đau lòng đâu",
-        "",
-        "Hôm nay là ngày bạn còn trẻ nhất đấy... so với những ngày tháng nỗ lực về sau",
-        "Bởi vì có ngày mai... hôm nay mãi mãi chỉ là vạch kẻ xuất phát cho hành trình ấy... cố lên nhé",
+        "Kể từ hôm nay... mỗi ngày hãy cười lên nhé.",
+        "trên đời này... trừ việc sinh tử ra... còn lại đều là chuyện nhỏ thôi.",
+        "cho dù gặp phải chuyện buồn gì đi chăng nữa... cũng đừng tự làm khó mình mà.",
+        "cho dù xảy ra chuyện rắc rối đến thế nào... cũng chẳng cần phải đau lòng đâu.",
+        "Hôm nay là ngày bạn còn trẻ nhất đấy... so với những ngày tháng nỗ lực về sau.",
+        "Bởi vì có ngày mai... hôm nay mãi mãi chỉ là vạch kẻ xuất phát cho hành trình ấy... cố lên nhé.",
     ]
-    return "\n".join(sentences)
+    tts_text = " ".join(sentences)
+    return tts_text, sentences
 
 
 # === PEXELS ===
@@ -208,148 +205,142 @@ def concat_videos(paths, outpath):
         for p in paths: f.write(f"file '{p}'\n")
     return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
 
-def render_subtitle_video(segments, outpath, width=1080, height=1920):
-    """Tạo video trong suốt với subtitle xuất hiện/tắt theo thời gian."""
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+# === HTML SUBTITLE RENDERER (Playwright) ===
 
-    try:
-        font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
-    except:
-        font = ImageFont.load_default()
+def build_subtitle_html(css_extra=""):
+    """HTML template cho subtitle: SN Pro SemiBold 48px, center, overlay blur."""
+    import base64
+    
+    # Base64 encode font
+    font_path = SUB_FONT
+    with open(font_path, "rb") as f:
+        font_b64 = base64.b64encode(f.read()).decode()
+    
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@font-face {{
+    font-family: 'SNPro';
+    src: url(data:font/ttf;base64,{font_b64}) format('truetype');
+    font-weight: 600;
+}}
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{
+    width: {1080}px; height: {1920}px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent;
+    font-family: 'SNPro', sans-serif;
+    font-weight: 600;
+    font-size: {SUB_SIZE}px;
+    color: #fff;
+    text-align: center;
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+}}  .sub-container {{
+    position: relative;
+    max-width: {1080 - 2 * SUB_SIDE_PAD}px;
+    padding: {SUB_BG_PAD}px;
+    word-break: keep-all;
+    white-space: pre-line;
+}}  .sub-bg {{
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,{SUB_BG_ALPHA/255:.2f});
+    border-radius: 20px;
+    filter: blur({SUB_BG_BLUR}px);
+    z-index: 0;
+}}  .sub-text {{
+    position: relative;
+    z-index: 1;
+    text-shadow: 
+        3px 3px 0 rgba(0,0,0,0.7),
+        -3px 3px 0 rgba(0,0,0,0.7),
+        3px -3px 0 rgba(0,0,0,0.7),
+        -3px -3px 0 rgba(0,0,0,0.7),
+        0 3px 0 rgba(0,0,0,0.7),
+        0 -3px 0 rgba(0,0,0,0.7),
+        3px 0 0 rgba(0,0,0,0.7),
+        -3px 0 0 rgba(0,0,0,0.7);
+}}  {css_extra}
+</style></head><body>
+<div class="sub-container">
+    <div class="sub-bg"></div>
+    <div class="sub-text" id="subtitle-text"></div>
+</div>
+<script>
+    // Controlled by Python via evaluate()
+    window.setText = function(text) {{
+        document.getElementById('subtitle-text').textContent = text;
+    }};
+</script>
+</body></html>"""
 
+
+def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
+    """Playwright render mỗi câu → PNG, ghép thành video trong suốt."""
+    from playwright.sync_api import sync_playwright
+    from PIL import Image
+    
     tmpdir = outpath + ".tmp"
     os.makedirs(tmpdir, exist_ok=True)
-    png_paths = []
-
-    text_width = width - 2 * SUB_SIDE_PAD  # 880px cho nội dung
-
-    for i, seg in enumerate(segments):
-        if seg.get("blank"):
-            # Blank segment → transparent PNG
-            pp = f"{tmpdir}/sub_blank_{i:03d}.png"
-            Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(pp)
-            png_paths.append(pp)
-            continue
-
-        lines = wrap_text(seg["text"], font, text_width)
-
-        img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        line_heights = [draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1] for line in lines]
-        line_widths = [draw.textbbox((0, 0), line, font=font)[2] - draw.textbbox((0, 0), line, font=font)[0] for line in lines]
-        total_h = sum(line_heights) + (len(lines) - 1) * 8
-        max_lw = max(line_widths)
-
-        y = (height - total_h) / 2
-
-        # Overlay: vẽ trên layer riêng → blur → paste vào ảnh chính
-        if SUB_BG_BLUR > 0:
-            bg_x1 = int((width - max_lw) / 2 - SUB_BG_PAD)
-            bg_y1 = int(y - SUB_BG_PAD)
-            bg_x2 = int((width + max_lw) / 2 + SUB_BG_PAD)
-            bg_y2 = int(y + total_h + SUB_BG_PAD)
-            bg_w = bg_x2 - bg_x1
-            bg_h = bg_y2 - bg_y1
-
-            # Vẽ overlay lên layer nhỏ (chỉ vùng cần)
-            bg_layer = Image.new("RGBA", (bg_w + SUB_BG_BLUR * 4, bg_h + SUB_BG_BLUR * 4), (0, 0, 0, 0))
-            bg_draw = ImageDraw.Draw(bg_layer)
-            bg_draw.rounded_rectangle(
-                [SUB_BG_BLUR * 2, SUB_BG_BLUR * 2, bg_w + SUB_BG_BLUR * 2, bg_h + SUB_BG_BLUR * 2],
-                radius=20, fill=(0, 0, 0, SUB_BG_ALPHA)
-            )
-            bg_layer = bg_layer.filter(ImageFilter.GaussianBlur(SUB_BG_BLUR))
-            img.paste(bg_layer, (bg_x1 - SUB_BG_BLUR * 2, bg_y1 - SUB_BG_BLUR * 2), bg_layer)
-        else:
-            bg_x1 = (width - max_lw) / 2 - SUB_BG_PAD
-            bg_y1 = y - SUB_BG_PAD
-            bg_x2 = (width + max_lw) / 2 + SUB_BG_PAD
-            bg_y2 = y + total_h + SUB_BG_PAD
-            draw.rounded_rectangle([bg_x1, bg_y1, bg_x2, bg_y2], radius=20, fill=(0, 0, 0, SUB_BG_ALPHA))
-
-        # Vẽ text
-        cur_y = y
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            lw = bbox[2] - bbox[0]
-            lh = bbox[3] - bbox[1]
-            x = (width - lw) / 2
-
-            for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-                draw.text((x + dx * SUB_OUTLINE, cur_y + dy * SUB_OUTLINE), line, font=font, fill=(0, 0, 0, 180))
-            draw.text((x, cur_y), line, font=font, fill=(255, 255, 255, 255))
-            cur_y += lh + 8
-
-        pp = f"{tmpdir}/sub_{i:03d}.png"
-        img.save(pp)
-        png_paths.append(pp)
-
-    # Tạo 1 blank transparent frame (dùng cho gap giữa các từ)
+    
+    # Tạo blank PNG cho gap
     blank_png = f"{tmpdir}/_blank.png"
     Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(blank_png)
-
-    # Tạo video từ PNGs, chèn blank frame cho gap giữa các segment
+    
+    html = build_subtitle_html()
+    html_path = f"{tmpdir}/subtitle.html"
+    with open(html_path, "w") as f:
+        f.write(html)
+    
+    png_paths = {}
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": width, "height": height})
+        page.goto(f"file://{html_path}")
+        
+        # Screenshot từng sentence
+        for sent in sentences:
+            page.evaluate(f"window.setText({json.dumps(sent)})")
+            pp = f"{tmpdir}/sub_{sent[:20]}.png"
+            page.screenshot(path=pp, omit_background=True)
+            png_paths[sent] = pp
+        
+        browser.close()
+    
+    # Build concat file with blanks
     concat_file = outpath + ".sub_concat.txt"
     last_end = 0.0
     with open(concat_file, "w") as f:
-        for i, (seg, pp) in enumerate(zip(segments, png_paths)):
-            gap = seg["start"] - last_end
-            if gap > 0.001:
-                f.write(f"file '{blank_png}'\n")
-                f.write(f"duration {gap:.3f}\n")
-            dur = seg["end"] - seg["start"]
-            if dur < 0.001:
-                dur = 0.001
-            f.write(f"file '{pp}'\n")
-            f.write(f"duration {dur:.3f}\n")
-            last_end = seg["start"] + dur
-
+        for seg in segments:
+            if seg.get("blank"):
+                gap = seg["end"] - seg["start"]
+                f.write(f"file '{blank_png}'\nduration {gap:.3f}\n")
+                last_end = seg["end"]
+            else:
+                gap = seg["start"] - last_end
+                if gap > 0.001:
+                    f.write(f"file '{blank_png}'\nduration {gap:.3f}\n")
+                
+                pp = png_paths.get(seg["text"])
+                if pp:
+                    dur = seg["end"] - seg["start"]
+                    dur = max(dur, 0.5)  # min 0.5s mỗi câu
+                    f.write(f"file '{pp}'\nduration {dur:.3f}\n")
+                last_end = seg["end"]
+    
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
-        f'-vf "fps=30,format=rgba" '
-        f'-c:v qtrle '
-        f'"{outpath}"'
+        f'-vf "fps=30,format=rgba" -c:v qtrle "{outpath}"'
     )
     _, err, rc = run(cmd, timeout=60)
     if rc != 0:
         print(f"  ❌ Sub video: {err[:300]}")
         return None
-
+    
     print(f"  ✅ Subtitle video: {os.path.getsize(outpath)/1_000_000:.1f} MB")
     return outpath
-
-
-def wrap_text(text, font, max_width):
-    """Wrap text thành nhiều dòng, giới hạn theo max_width pixel."""
-    words = text.split()
-    lines = []
-    current_line = ""
-
-    for word in words:
-        test = f"{current_line} {word}".strip() if current_line else word
-        # Dùng textbbox thay textlength (PIL mới)
-        try:
-            bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), test, font=font)
-            w = bbox[2] - bbox[0]
-        except:
-            # Fallback: dùng font.getlength hoặc textlength cũ
-            try:
-                w = font.getlength(test)
-            except:
-                w = len(test) * (font.size * 0.6)  # rough estimate
-
-        if w <= max_width:
-            current_line = test
-        else:
-            if current_line:
-                lines.append(current_line)
-            current_line = word
-
-    if current_line:
-        lines.append(current_line)
-
-    return lines if lines else [text]
 
 
 def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
@@ -422,10 +413,10 @@ def pipeline(so_thu, raw_content):
         if len(all_videos) >= 5: break
     if not all_videos: return print("❌ Không tìm được video!")
 
-    # 2. Format TTS (thủ công)
+    # 2. Format TTS (thủ công) → trả về (tts_text, sentences)
     print(f"  ✍️ Formatting TTS text...")
-    tts_text = format_tts_manual(raw_content)
-    print(f"  📝 Formatted ({len(tts_text)} chars): {tts_text[:120]}...")
+    tts_text, sentences = format_tts_manual(raw_content)
+    print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:120]}...")
 
     # 3. ElevenLabs with timestamps
     ap = f"{outdir}/tts.mp3"
@@ -438,9 +429,9 @@ def pipeline(so_thu, raw_content):
     # 4. Alignment → segments (theo từng câu)
     segments = alignment_to_segments(alignment, tts_text)
 
-    # 5. Render subtitle video
+    # 5. Render subtitle HTML → video
     sub_video = f"{outdir}/subtitle.mov"
-    if not render_subtitle_video(segments, sub_video): return
+    if not render_subtitle_html(sentences, segments, sub_video): return
 
     # 6. Download videos
     target = aud_dur + 5.0; dl, tdur = [], 0
