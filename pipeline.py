@@ -123,33 +123,35 @@ def alignment_to_segments(alignment):
     starts = alignment["character_start_times_seconds"]
     ends = alignment["character_end_times_seconds"]
 
-    segments = []
+    # Build words, skip punctuation/whitespace-only tokens (., ..., \n)
+    words = []
     word_chars = []
     word_start = None
+    word_end = None
 
     for i, ch in enumerate(chars):
-        if ch == " ":
+        if ch in " \n.":
             if word_chars:
-                segments.append({"start": word_start, "end": ends[i-1], "text": "".join(word_chars)})
+                words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
                 word_chars = []
                 word_start = None
+                word_end = None
         else:
             if word_start is None:
                 word_start = starts[i]
             word_chars.append(ch)
+            word_end = ends[i]
 
     if word_chars:
-        segments.append({"start": word_start, "end": ends[-1], "text": "".join(word_chars)})
+        words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
 
-    # Merge words thành các segment dễ đọc (group 3-5 từ mỗi segment)
+    # Merge 2-3 từ mỗi segment (nhỏ hơn để text hiện dần dần)
     merged = []
     buf = []
-    for w in segments:
+    for w in words:
         buf.append(w)
-        # Group khi đủ 4 từ hoặc có dấu câu kết thúc
-        text = " ".join(w["text"] for w in buf)
-        if len(buf) >= 4 or any(text.rstrip().endswith(c) for c in ".!?,:;"):
-            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": text})
+        if len(buf) >= 3:
+            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": " ".join(w["text"] for w in buf)})
             buf = []
     if buf:
         merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": " ".join(w["text"] for w in buf)})
