@@ -339,7 +339,9 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
     
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
-        f'-vf "fps=30,format=rgba" -c:v qtrle "{outpath}"'
+        f'-vf "fps=30,format=rgba" -c:v qtrle '
+        f'-t {VIDEO_START_DELAY + segments[-1]["end"] + VIDEO_END_PAD:.1f} '
+        f'"{outpath}"'
     )
     _, err, rc = run(cmd, timeout=60)
     if rc != 0:
