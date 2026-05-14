@@ -525,6 +525,8 @@ def pipeline(so_thu, raw_content):
     print(f"  ✍️ Formatting TTS text (LLM)...")
     tts_text, sentences = format_tts_ai(raw_content)
     print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
+    # In ra dòng đặc biệt để trigger.py capture
+    print(f"FORMATTED_TEXT:{tts_text}")
 
     # 3. ElevenLabs with timestamps
     ap = f"{outdir}/tts.mp3"

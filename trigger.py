@@ -42,22 +42,33 @@ def pick_random(letters, completed):
     return random.choice(available)
 
 def run_pipeline(so_thu):
-    """Chạy pipeline.py và trả về CDN link."""
+    """Chạy pipeline.py và trả về (CDN link, formatted_text)."""
     print(f"🚀 Running pipeline for thư #{so_thu}...")
     r = subprocess.run(
         ["python3", PIPELINE, str(so_thu)],
         capture_output=True, text=True, timeout=300, cwd=REPO
     )
-    # Extract CDN link from output
-    for line in r.stdout.split("\n"):
+    stdout = r.stdout
+    # Extract formatted text
+    formatted = None
+    for line in stdout.split("\n"):
+        if line.startswith("FORMATTED_TEXT:"):
+            formatted = line.split("FORMATTED_TEXT:", 1)[-1].strip()
+            break
+    # Extract CDN link
+    cdn = None
+    for line in stdout.split("\n"):
         if "CDN: https://" in line:
-            return line.split("CDN: ")[-1].strip()
-    # Fallback: tìm RESULT line
-    for line in r.stdout.split("\n"):
-        if "RESULT: https://" in line:
-            return line.split("RESULT: ")[-1].strip()
-    print(f"❌ Pipeline output:\n{r.stdout[-500:]}")
-    return None
+            cdn = line.split("CDN: ")[-1].strip()
+            break
+    if not cdn:
+        for line in stdout.split("\n"):
+            if "RESULT: https://" in line:
+                cdn = line.split("RESULT: ")[-1].strip()
+                break
+    if not cdn:
+        print(f"❌ Pipeline output:\n{stdout[-500:]}")
+    return cdn, formatted
 
 def send_discord(token, message):
     """Gửi message vào channel qua REST API."""
@@ -110,7 +121,7 @@ def main():
     print(f"   Content: {content[:80]}...")
     
     # Chạy pipeline
-    cdn = run_pipeline(so_thu)
+    cdn, formatted = run_pipeline(so_thu)
     if not cdn:
         # Fallback: tìm file output
         outdir = f"/tmp/thu_{so_thu}_pexels"
@@ -128,16 +139,19 @@ def main():
     if not token:
         print("❌ No Discord token")
         print(f"CDN: {cdn}")
-        print(f"Content: {content[:200]}...")
+        print(f"Content: {(formatted or content)[:200]}...")
         return
+    
+    # Dùng formatted text (tiếng Việt thuần) nếu có
+    display_text = formatted if formatted else content
     
     # Message A: CDN link only
     msg_a = f"🎬 **Video mới — #{so_thu}**\n\n🔗 {cdn}"
     send_discord(token, msg_a)
     
-    # Message B: Full text (copy cho mô tả TikTok)
-    hashtags = generate_hashtags(content)
-    msg_b = f"📝 **{title}**\n*{source}*\n\n{content}\n\n{hashtags}"
+    # Message B: Full formatted text (copy cho mô tả TikTok)
+    hashtags = generate_hashtags(display_text)
+    msg_b = f"📝 **{title}**\n*{source}*\n\n{display_text}\n\n{hashtags}"
     send_discord(token, msg_b)
     
     # Message C: Confirm prompt
