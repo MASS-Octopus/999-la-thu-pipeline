@@ -307,31 +307,34 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
         
         browser.close()
     
-    # Build subtitle: mỗi câu → short video clip (loop PNG), ghép bằng concat
+    # Build subtitle: initial 2s blank → per-sentence clips → ending 3s blank
     sub_parts = []
-    cum_end = VIDEO_START_DELAY
+    
+    # Initial 2s blank
+    bp0 = f"{tmpdir}/part_init_blank.mov"
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"color=c=black@0.0:s={width}x{height}:d={VIDEO_START_DELAY:.1f},format=rgba",
+        "-c:v", "qtrle", bp0
+    ], capture_output=True, timeout=30)
+    sub_parts.append(bp0)
     
     for seg in segments:
-        shifted_start = seg["start"] + VIDEO_START_DELAY
-        shifted_end = seg["end"] + VIDEO_START_DELAY
-        
         if seg.get("blank"):
-            dur = shifted_end - shifted_start
+            dur = seg["end"] - seg["start"]
             if dur > 0.001:
-                # Tạo blank video clip
                 bp = f"{tmpdir}/part_{len(sub_parts):03d}_blank.mov"
                 subprocess.run([
                     "ffmpeg", "-y", "-f", "lavfi",
                     "-i", f"color=c=black@0.0:s={width}x{height}:d={dur:.3f},format=rgba",
                     "-c:v", "qtrle", bp
                 ], capture_output=True, timeout=30)
-                sub_parts.append((bp, dur, None))
+                sub_parts.append(bp)
         else:
             pp = png_paths.get(seg["text"])
             if pp:
-                dur = shifted_end - shifted_start
+                dur = seg["end"] - seg["start"]
                 dur = max(dur, 0.8)
-                # Loop PNG thành video clip
                 vp = f"{tmpdir}/part_{len(sub_parts):03d}_text.mov"
                 subprocess.run([
                     "ffmpeg", "-y", "-loop", "1",
@@ -341,15 +344,22 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
                     "-t", f"{dur:.3f}",
                     vp
                 ], capture_output=True, timeout=30)
-                sub_parts.append((vp, dur, pp))
+                sub_parts.append(vp)
     
-    # Concat tất cả clip bằng concat protocol
+    # Ending 3s blank
+    bpe = f"{tmpdir}/part_end_blank.mov"
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"color=c=black@0.0:s={width}x{height}:d={VIDEO_END_PAD:.1f},format=rgba",
+        "-c:v", "qtrle", bpe
+    ], capture_output=True, timeout=30)
+    sub_parts.append(bpe)
+    
+    # Concat tất cả clip
     parts_file = outpath + ".parts.txt"
-    total_dur = 0
     with open(parts_file, "w") as f:
-        for vp, dur, _ in sub_parts:
+        for vp in sub_parts:
             f.write(f"file '{vp}'\n")
-            total_dur += dur
     
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{parts_file}" '
