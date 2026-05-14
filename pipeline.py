@@ -28,12 +28,13 @@ PEXELS_QUERIES = [
 ]
 # Subtitle style
 SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold-VI.ttf"  # SN Pro SemiBold, vietnamese subset
-SUB_SIZE = 48  # +2px
+SUB_SIZE = 50  # +2px (48→50)
 SUB_SIDE_PAD = 100
 SUB_OUTLINE = 3
-SUB_BG_ALPHA = 50  # overlay nền mờ (giảm để hòa video)
-SUB_BG_PAD = 16  # padding overlay quanh text
-SUB_BG_BLUR = 12  # Gaussian blur radius cho overlay (0 = không blur)
+SUB_BG_ALPHA = 0  # bỏ overlay nền
+FADE_MS = 0.2  # fade in/out 200ms
+VIDEO_START_DELAY = 2.0  # text + audio bắt đầu sau 2s
+VIDEO_END_PAD = 3.0  # video chạy thêm 3s sau giọng đọc
 
 
 def run(cmd, timeout=60):
@@ -198,10 +199,9 @@ def concat_videos(paths, outpath):
 # === HTML SUBTITLE RENDERER (Playwright) ===
 
 def build_subtitle_html(css_extra=""):
-    """HTML template cho subtitle: SN Pro SemiBold 48px, center, overlay blur."""
+    """HTML template cho subtitle: SN Pro SemiBold, fade in/out, không overlay nền."""
     import base64
     
-    # Base64 encode font
     font_path = SUB_FONT
     with open(font_path, "rb") as f:
         font_b64 = base64.b64encode(f.read()).decode()
@@ -226,22 +226,14 @@ body {{
     line-height: 1.4;
     letter-spacing: -0.01em;
     overflow: hidden;
-}}  .sub-container {{
-    position: relative;
+}}
+.sub-container {{
     max-width: {1080 - 2 * SUB_SIDE_PAD}px;
-    padding: {SUB_BG_PAD}px;
     word-break: keep-all;
     white-space: pre-line;
-}}  .sub-bg {{
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,{SUB_BG_ALPHA/255:.2f});
-    border-radius: 20px;
-    filter: blur({SUB_BG_BLUR}px);
-    z-index: 0;
-}}  .sub-text {{
-    position: relative;
-    z-index: 1;
+    animation: fadeIn {FADE_MS}s ease-out;
+}}
+.sub-text {{
     text-shadow: 
         3px 3px 0 rgba(0,0,0,0.7),
         -3px 3px 0 rgba(0,0,0,0.7),
@@ -251,30 +243,45 @@ body {{
         0 -3px 0 rgba(0,0,0,0.7),
         3px 0 0 rgba(0,0,0,0.7),
         -3px 0 0 rgba(0,0,0,0.7);
-}}  {css_extra}
+}}
+@keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(8px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
+}}
+@keyframes fadeOut {{
+    from {{ opacity: 1; }}
+    to {{ opacity: 0; }}
+}}
+.fading-out {{
+    animation: fadeOut {FADE_MS}s ease-in forwards;
+}}
+{css_extra}
 </style></head><body>
-<div class="sub-container">
-    <div class="sub-bg"></div>
+<div class="sub-container" id="sub-container">
     <div class="sub-text" id="subtitle-text"></div>
 </div>
 <script>
-    // Controlled by Python via evaluate()
     window.setText = function(text) {{
-        document.getElementById('subtitle-text').textContent = text;
+        var el = document.getElementById('subtitle-text');
+        var container = document.getElementById('sub-container');
+        container.classList.remove('fading-out');
+        el.textContent = text;
+    }};
+    window.startFadeOut = function() {{
+        document.getElementById('sub-container').classList.add('fading-out');
     }};
 </script>
 </body></html>"""
 
 
 def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
-    """Playwright render mỗi câu → PNG, ghép thành video trong suốt."""
+    """Playwright render mỗi câu → PNG, ghép thành video trong suốt (có fade in/out)."""
     from playwright.sync_api import sync_playwright
     from PIL import Image
     
     tmpdir = outpath + ".tmp"
     os.makedirs(tmpdir, exist_ok=True)
     
-    # Tạo blank PNG cho gap
     blank_png = f"{tmpdir}/_blank.png"
     Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(blank_png)
     
@@ -289,36 +296,44 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": width, "height": height})
         page.goto(f"file://{html_path}")
+        page.wait_for_timeout(500)
         
-        # Screenshot từng sentence
         for sent in sentences:
             page.evaluate(f"window.setText({json.dumps(sent)})")
+            page.wait_for_timeout(250)
             pp = f"{tmpdir}/sub_{sent[:20]}.png"
             page.screenshot(path=pp, omit_background=True)
             png_paths[sent] = pp
         
         browser.close()
     
-    # Build concat file with blanks
+    # Build concat: initial 2s blank + segments (shifted by VIDEO_START_DELAY)
     concat_file = outpath + ".sub_concat.txt"
-    last_end = 0.0
     with open(concat_file, "w") as f:
+        # Initial delay blank
+        f.write(f"file '{blank_png}'\nduration {VIDEO_START_DELAY:.3f}\n")
+        last_end = VIDEO_START_DELAY
+        
         for seg in segments:
+            shifted_start = seg["start"] + VIDEO_START_DELAY
+            shifted_end = seg["end"] + VIDEO_START_DELAY
+            
             if seg.get("blank"):
-                gap = seg["end"] - seg["start"]
-                f.write(f"file '{blank_png}'\nduration {gap:.3f}\n")
-                last_end = seg["end"]
+                dur = shifted_end - shifted_start
+                if dur > 0:
+                    f.write(f"file '{blank_png}'\nduration {dur:.3f}\n")
+                last_end = shifted_end
             else:
-                gap = seg["start"] - last_end
+                gap = shifted_start - last_end
                 if gap > 0.001:
                     f.write(f"file '{blank_png}'\nduration {gap:.3f}\n")
                 
                 pp = png_paths.get(seg["text"])
                 if pp:
-                    dur = seg["end"] - seg["start"]
-                    dur = max(dur, 0.5)  # min 0.5s mỗi câu
+                    dur = shifted_end - shifted_start
+                    dur = max(dur, 0.8)  # min 0.8s mỗi câu
                     f.write(f"file '{pp}'\nduration {dur:.3f}\n")
-                last_end = seg["end"]
+                last_end = shifted_end
     
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
@@ -339,9 +354,9 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
     print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s")
     if vid_dur <= 0 or aud_dur <= 0: return False
 
-    total_dur = aud_dur + fade_sec
+    total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
+    delay_ms = int(VIDEO_START_DELAY * 1000)
 
-    # Loop video
     if vid_dur < total_dur:
         loops = int(total_dur / vid_dur) + 1
         print(f"  🔄 Looping {loops}x")
@@ -360,7 +375,7 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
         f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
         f'fps=30,format=rgba[vbase];'
         f'[vbase][2:v]overlay=0:0:format=auto,format=yuv420p[v];'
-        f'[1:a]anull[a]" '
+        f'[1:a]adelay={delay_ms}|{delay_ms}[a]" '
         f'-map "[v]" -map "[a]" '
         f'-c:v libx264 -preset fast -crf 20 '
         f'-c:a aac -b:a 128k '
