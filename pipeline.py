@@ -284,137 +284,103 @@ body {{
 
 
 def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
-    """Playwright render mỗi câu → PNG, ghép thành video trong suốt (có fade in/out)."""
+    """Playwright render mỗi câu → PNG. Trả về dict {sentence_text: png_path}."""
     from playwright.sync_api import sync_playwright
     from PIL import Image
-    
+
     tmpdir = outpath + ".tmp"
     os.makedirs(tmpdir, exist_ok=True)
-    
-    blank_png = f"{tmpdir}/_blank.png"
-    Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(blank_png)
-    
+
     html = build_subtitle_html()
     html_path = f"{tmpdir}/subtitle.html"
     with open(html_path, "w") as f:
         f.write(html)
-    
+
     png_paths = {}
-    
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": width, "height": height})
         page.goto(f"file://{html_path}")
         page.wait_for_timeout(500)
-        
+
         for sent in sentences:
             page.evaluate(f"window.setText({json.dumps(sent)})")
-            page.wait_for_timeout(int(FADE_MS * 1000) + 200)  # đợi fade animation xong
+            page.wait_for_timeout(int(FADE_MS * 1000) + 200)
             pp = f"{tmpdir}/sub_{sent[:20]}.png"
             page.screenshot(path=pp, omit_background=True)
             png_paths[sent] = pp
-        
+
         browser.close()
-    
-    # Build subtitle: initial 2s blank → per-sentence clips → ending 3s blank
-    sub_parts = []
-    
-    # Initial 2s blank
-    bp0 = f"{tmpdir}/part_init_blank.mov"
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"color=c=black@0.0:s={width}x{height}:d={VIDEO_START_DELAY:.1f},format=rgba",
-        "-c:v", "qtrle", bp0
-    ], capture_output=True, timeout=30)
-    sub_parts.append(bp0)
-    
-    for seg in segments:
-        if seg.get("blank"):
-            dur = seg["end"] - seg["start"]
-            if dur > 0.001:
-                bp = f"{tmpdir}/part_{len(sub_parts):03d}_blank.mov"
-                subprocess.run([
-                    "ffmpeg", "-y", "-f", "lavfi",
-                    "-i", f"color=c=black@0.0:s={width}x{height}:d={dur:.3f},format=rgba",
-                    "-c:v", "qtrle", bp
-                ], capture_output=True, timeout=30)
-                sub_parts.append(bp)
-        else:
-            pp = png_paths.get(seg["text"])
-            if pp:
-                dur = seg["end"] - seg["start"]
-                dur = max(dur, 0.8)
-                vp = f"{tmpdir}/part_{len(sub_parts):03d}_text.mov"
-                subprocess.run([
-                    "ffmpeg", "-y", "-loop", "1",
-                    "-i", pp,
-                    "-vf", f"fps=30,format=rgba",
-                    "-c:v", "qtrle",
-                    "-t", f"{dur:.3f}",
-                    vp
-                ], capture_output=True, timeout=30)
-                sub_parts.append(vp)
-    
-    # Ending 3s blank
-    bpe = f"{tmpdir}/part_end_blank.mov"
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"color=c=black@0.0:s={width}x{height}:d={VIDEO_END_PAD:.1f},format=rgba",
-        "-c:v", "qtrle", bpe
-    ], capture_output=True, timeout=30)
-    sub_parts.append(bpe)
-    
-    # Concat tất cả clip
-    parts_file = outpath + ".parts.txt"
-    with open(parts_file, "w") as f:
-        for vp in sub_parts:
-            f.write(f"file '{vp}'\n")
-    
-    cmd = (
-        f'ffmpeg -y -f concat -safe 0 -i "{parts_file}" '
-        f'-c copy "{outpath}"'
-    )
-    _, err, rc = run(cmd, timeout=120)
-    if rc != 0:
-        print(f"  ❌ Sub concat: {err[:300]}")
-        return None
-    
-    print(f"  ✅ Subtitle video: {os.path.getsize(outpath)/1_000_000:.1f} MB")
-    return outpath
+
+    return png_paths
 
 
-def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
+def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1.0):
+    """Overlay subtitle PNGs với absolute timing → không drift tuyệt đối."""
     aud_dur = get_duration(audio_path)
     vid_dur = get_duration(video_path)
-    print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s")
-    if vid_dur <= 0 or aud_dur <= 0: return False
-
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
     delay_ms = int(VIDEO_START_DELAY * 1000)
     fade_start = total_dur - fade_sec
-
+    
     if vid_dur < total_dur:
-        print(f"  ⚠️  Video quá ngắn ({vid_dur:.1f}s < {total_dur:.1f}s), cần concat thêm")
+        print(f"  ⚠️  Video ngắn ({vid_dur:.1f}s < {total_dur:.1f}s)")
         return False
-
+    
+    print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s, Target: {total_dur:.1f}s")
+    
+    # Build input list: video, audio, then all sub PNGs
+    sub_png_list = []
+    sub_overlays = []
+    sub_idx = 0
+    
+    for seg in segments:
+        if seg.get("blank") or not seg.get("text"):
+            continue
+        pp = sub_pngs.get(seg["text"])
+        if not pp:
+            continue
+        t_start = seg["start"] + VIDEO_START_DELAY
+        t_end = seg["end"] + VIDEO_START_DELAY
+        sub_png_list.append(f'-i "{pp}"')
+        
+        png_input_idx = 2 + sub_idx  # 0=video, 1=audio, 2+=PNGs
+        prev = "vbase" if not sub_overlays else f"vsub{sub_idx - 1}"
+        cur = f"vsub{sub_idx}"
+        sub_overlays.append(
+            f"[{prev}][{png_input_idx}:v]overlay=0:0:"
+            f"enable='between(t,{t_start:.3f},{t_end:.3f})':format=auto"
+            f"[{cur}]"
+        )
+        sub_idx += 1
+    
+    last_v = f"vsub{len(sub_overlays) - 1}" if sub_overlays else "vbase"
+    
+    filter_lines = [
+        f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
+        f"fps=30,format=rgba[vbase]",
+        f"[1:a]adelay={delay_ms}|{delay_ms}[a]"
+    ] + sub_overlays
+    
+    filter_complex = ";".join(filter_lines)
+    
     cmd = (
-        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" -i "{sub_video}" '
-        f'-filter_complex '
-        f'"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,'
-        f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
-        f'fps=30,format=rgba[vbase];'
-        f'[vbase][2:v]overlay=0:0:format=auto,format=yuv420p[v];'
-        f'[1:a]adelay={delay_ms}|{delay_ms}[a]" '
-        f'-map "[v]" -map "[a]" '
+        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" '
+        f'{" ".join(sub_png_list)} '
+        f'-filter_complex "{filter_complex}" '
+        f'-map "[{last_v}]" -map "[a]" '
         f'-c:v libx264 -preset fast -crf 20 '
         f'-c:a aac -b:a 128k '
         f'-movflags +faststart '
         f'-t {total_dur} '
         f'"{outpath}"'
     )
-    _, err, rc = run(cmd, timeout=180)
+    
+    _, err, rc = run(cmd, timeout=300)
     if rc != 0:
-        print(f"  ❌ Compose: {err[:400]}")
+        print(f"  ❌ Build: {err[:500]}")
         return False
     print(f"  ✅ {os.path.getsize(outpath)/1_000_000:.1f} MB, {total_dur:.1f}s")
     return True
@@ -463,34 +429,28 @@ def pipeline(so_thu, raw_content):
     # 4. Alignment → segments (truyền sentences từ format)
     segments = alignment_to_segments(alignment, sentences)
 
-    # 5. Render subtitle HTML → video
-    sub_video = f"{outdir}/subtitle.mov"
-    if not render_subtitle_html(sentences, segments, sub_video): return
-
-    # 6. Download videos — concat đủ dài hơn total_dur
+    # 5. Render subtitle HTML → PNGs
+    sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
+    
+    # 6. Tìm 1 Pexels video đủ dài > total_dur
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
-    target = total_dur + 3.0  # buffer 3s để chắc chắn đủ
-
-    dl, tdur = [], 0
+    best_video = None
     for v in all_videos:
-        if tdur >= target: break
-        fp = f"{outdir}/vid_{v['id']}.mp4"
-        if download_video(get_best_file(v), fp):
-            dl.append(fp); tdur += v.get("duration", 0)
-        time.sleep(0.5)
-    print(f"  📦 {len(dl)} videos, total {tdur:.1f}s (need > {target:.1f}s)")
-
-    # 7. Concat → re-encode combined video (đủ dài) → compose + cắt bằng -t
-    comb = f"{outdir}/combined.mp4"
-    if not concat_videos(dl, comb): return print("❌ Concat failed!")
+        if v.get("duration", 0) >= total_dur + 2:
+            best_video = v
+            break
+    if not best_video:
+        # Fallback: pick video dài nhất
+        all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
+        best_video = all_videos[0]
     
-    comb_dur = get_duration(comb)
-    if comb_dur < total_dur:
-        print(f"  ❌ Combined video quá ngắn: {comb_dur:.1f}s < {total_dur:.1f}s")
-        return
+    print(f"  🎬 Selected video: id={best_video['id']}, {best_video['duration']}s")
+    fp = f"{outdir}/vid_{best_video['id']}.mp4"
+    if not download_video(get_best_file(best_video), fp): return
     
+    # 7. Build TikTok: overlay subtitle absolute timing → không drift
     op = f"{outdir}/tiktok.mp4"
-    if not compose_tiktok(comb, ap, sub_video, op): return
+    if not build_tiktok(fp, ap, sub_pngs, segments, op): return
 
     # 8. CDN
     print(f"  ☁️ Uploading CDN...")
