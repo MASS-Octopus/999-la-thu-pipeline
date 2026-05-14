@@ -145,16 +145,10 @@ def alignment_to_segments(alignment):
     if word_chars:
         words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
 
-    # Merge 2-3 từ mỗi segment (nhỏ hơn để text hiện dần dần)
+    # 1 word = 1 segment (đồng bộ tuyệt đối)
     merged = []
-    buf = []
     for w in words:
-        buf.append(w)
-        if len(buf) >= 3:
-            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": " ".join(w["text"] for w in buf)})
-            buf = []
-    if buf:
-        merged.append({"start": buf[0]["start"], "end": buf[-1]["end"], "text": " ".join(w["text"] for w in buf)})
+        merged.append(w)
 
     print(f"  ✅ {len(merged)} subtitle segments")
     return merged
@@ -242,13 +236,25 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
         img.save(pp)
         png_paths.append(pp)
 
-    # Tạo video từ PNGs
+    # Tạo 1 blank transparent frame (dùng cho gap giữa các từ)
+    blank_png = f"{tmpdir}/_blank.png"
+    Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(blank_png)
+
+    # Tạo video từ PNGs, chèn blank frame cho gap giữa các segment
     concat_file = outpath + ".sub_concat.txt"
+    last_end = 0.0
     with open(concat_file, "w") as f:
         for i, (seg, pp) in enumerate(zip(segments, png_paths)):
+            gap = seg["start"] - last_end
+            if gap > 0.001:
+                f.write(f"file '{blank_png}'\n")
+                f.write(f"duration {gap:.3f}\n")
             dur = seg["end"] - seg["start"]
+            if dur < 0.001:
+                dur = 0.001
             f.write(f"file '{pp}'\n")
             f.write(f"duration {dur:.3f}\n")
+            last_end = seg["start"] + dur
 
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
