@@ -115,7 +115,7 @@ def generate_tts_with_timestamps(text, outpath):
 
 
 def alignment_to_segments(alignment, tts_text):
-    """Chia segments theo từng câu (phân cách bởi \\n\\n trong TTS text)."""
+    """Chia segments theo từng câu (. trong TTS text). Dùng prefix-matching."""
     chars = alignment["characters"]
     starts = alignment["character_start_times_seconds"]
     ends = alignment["character_end_times_seconds"]
@@ -148,46 +148,64 @@ def alignment_to_segments(alignment, tts_text):
             skip.add(i + 1)
     words = [w for j, w in enumerate(words) if j not in skip]
 
-    # Split TTS text thành các câu (phân cách bởi \\n\\n)
-    raw_sentences = [s.strip() for s in tts_text.split("\n\n") if s.strip()]
-    # Chuẩn hóa text câu (bỏ ... và khoảng trắng thừa) để match với words
+    # Split TTS text thành các câu (phân cách bởi ". ")
+    parts = tts_text.split(". ")
+    raw_sentences = []
+    for p in parts:
+        s = p.strip()
+        if not s: continue
+        if not s.endswith("."):
+            s += "."
+        raw_sentences.append(s)
+
     def norm(s):
         import re
-        return re.sub(r'\s+', ' ', s.replace("...", " ")).strip()
+        s = re.sub(r'\.\.\.', ' ', s)
+        s = re.sub(r'\.', '', s)
+        return re.sub(r'\s+', ' ', s).strip()
 
-    sentences = [{"raw": s, "norm": norm(s)} for s in raw_sentences]
-
-    # Match words vào từng câu
+    # Prefix-match words vào từng câu
     segments = []
     wi = 0
-    for sent in sentences:
-        # Tìm các words khớp với câu này
+    for sent in raw_sentences:
+        target = norm(sent)
+        if not target: continue
+        
         sent_words = []
-        remaining = sent["norm"]
-        while wi < len(words) and remaining:
+        pos = 0
+        start_wi = wi
+        
+        while wi < len(words) and pos < len(target):
             w = words[wi]
-            # So khớp prefix
-            if remaining.startswith(w["text"]):
+            # So khớp: target[pos:] có bắt đầu bằng từ này không?
+            if target[pos:].startswith(w["text"]):
                 sent_words.append(w)
-                remaining = remaining[len(w["text"]):].lstrip()
+                pos += len(w["text"])
+                # Bỏ qua whitespace sau từ
+                while pos < len(target) and target[pos] == " ":
+                    pos += 1
                 wi += 1
             else:
-                # Có thể alignment bỏ sót 1 từ, thử skip 1 word
+                # Alignment sai → skip từ này, thử từ tiếp
                 wi += 1
-                break
-
+        
         if sent_words:
+            # Dùng raw sentence cho display
             segments.append({
                 "start": sent_words[0]["start"],
                 "end": sent_words[-1]["end"],
-                "text": sent["raw"],
+                "text": sent,
                 "blank": False
             })
-            # Luôn chèn blank giữa các câu (min 0.3s)
+            
+            # Luôn chèn blank giữa các câu
             if wi < len(words):
                 gap_end = max(sent_words[-1]["end"] + 0.3, words[wi]["start"])
                 segments.append({"start": sent_words[-1]["end"], "end": gap_end,
                                  "text": "", "blank": True})
+        else:
+            # Sentence không match được word nào, reset wi
+            wi = start_wi + 1
 
     print(f"  ✅ {len(segments)} segments ({len(raw_sentences)} câu + blanks)")
     return segments
