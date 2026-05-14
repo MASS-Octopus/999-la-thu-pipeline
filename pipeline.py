@@ -324,9 +324,10 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     delay_ms = int(VIDEO_START_DELAY * 1000)
     fade_start = total_dur - fade_sec
     
-    if vid_dur < total_dur:
-        print(f"  ⚠️  Video ngắn ({vid_dur:.1f}s < {total_dur:.1f}s)")
-        return False
+    # Loop video nếu cần (dùng -stream_loop -1 bên dưới)
+    need_loop = vid_dur < total_dur
+    if need_loop:
+        print(f"  🔄 Video ngắn ({vid_dur:.1f}s < {total_dur:.1f}s) → sẽ stream_loop")
     
     print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s, Target: {total_dur:.1f}s")
     
@@ -366,8 +367,10 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     
     filter_complex = ";".join(filter_lines)
     
+    video_input_flag = "-stream_loop -1 " if need_loop else ""
+    
     cmd = (
-        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" '
+        f'ffmpeg -y {video_input_flag}-i "{video_path}" -i "{audio_path}" '
         f'{" ".join(sub_png_list)} '
         f'-filter_complex "{filter_complex}" '
         f'-map "[{last_v}]" -map "[a]" '
@@ -432,23 +435,14 @@ def pipeline(so_thu, raw_content):
     # 5. Render subtitle HTML → PNGs
     sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
     
-    # 6. Tìm 1 Pexels video đủ dài > total_dur
+    # 6. Pick 1 video + loop với -stream_loop -1 (không cần concat)
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
-    best_video = None
-    for v in all_videos:
-        if v.get("duration", 0) >= total_dur + 2:
-            best_video = v
-            break
-    if not best_video:
-        # Fallback: pick video dài nhất
-        all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
-        best_video = all_videos[0]
-    
-    print(f"  🎬 Selected video: id={best_video['id']}, {best_video['duration']}s")
+    best_video = max(all_videos, key=lambda v: v.get("duration", 0))
+    print(f"  🎬 Selected video: id={best_video['id']}, {best_video['duration']}s → loop")
     fp = f"{outdir}/vid_{best_video['id']}.mp4"
     if not download_video(get_best_file(best_video), fp): return
     
-    # 7. Build TikTok: overlay subtitle absolute timing → không drift
+    # 7. Build TikTok: loop video + overlay subtitle absolute timing
     op = f"{outdir}/tiktok.mp4"
     if not build_tiktok(fp, ap, sub_pngs, segments, op): return
 
