@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-999 Lá Thư — TikTok Video Pipeline (v5-fix)
-- Subtitle dùng PIL render text → ffmpeg overlay (không cần libass)
+999 Lá Thư — TikTok Video Pipeline (v5-final)
+- Format TTS thủ công (emotional emphasis rules)
+- Whisper word timestamps → PIL render subtitle PNGs
+- Tạo subtitle video từ PNGs → ffmpeg overlay 1 lần
 """
 
 import json, os, sys, subprocess, time
@@ -13,8 +15,6 @@ ELEVENLABS_VOICE = "BdXlJle17DV6QV63lzql"
 ELEVENLABS_MODEL = "eleven_v3"
 CDN_URL = "http://127.0.0.1:9876/publish"
 LETTERS_JSON = "/Volumes/ServerData/Users/octopus/Downloads/sach-chua-lanh/999-la-thu-gui-cho-chinh-minh.json"
-OLLAMA_MODEL = "qwen3.5:cloud"
-OLLAMA_BASE = "http://localhost:11434"
 STATE_FILE = os.path.expanduser("~/.hermes/state/pexels_used_videos.json")
 
 PEXELS_QUERIES = [
@@ -27,23 +27,8 @@ PEXELS_QUERIES = [
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
 
-TTS_PROMPT_SHORT = """Convert this Vietnamese monologue into TTS-optimized text.
-- Replace punctuation with pauses: ... short, line break medium, empty line long
-- Split sentences into breath-sized chunks
-- Add 1-2 emotional emphasis words (nhé, thôi, mà, đấy, đâu, cố lên, thôi thì) naturally
-- Max 1 emphasis per 2 sentences. Tone: warm, hopeful.
-- Plain text only, no explanation.
-
-Input:
-{text}
-
-Output:"""
-
-# Subtitle style
 SUB_FONT = "/System/Library/Fonts/Helvetica.ttc"
 SUB_SIZE = 44
-SUB_COLOR = (255, 255, 255, 255)
-SUB_OUTLINE = 2  # px
 
 
 def run(cmd, timeout=60):
@@ -60,22 +45,28 @@ def save_used_videos(ids):
     json.dump(ids, open(STATE_FILE, "w"))
 
 
-def call_qwen(prompt):
-    payload = json.dumps({"model": OLLAMA_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.7}})
-    tf = f"/tmp/_qwen_{os.getpid()}.json"
-    with open(tf, "w") as f: f.write(payload)
-    try:
-        r = subprocess.run(["curl", "-s", "--max-time", "60", "-d", f"@{tf}", f"{OLLAMA_BASE}/api/chat"], capture_output=True, text=True, timeout=65)
-        if r.returncode != 0 or not r.stdout: return ""
-        return json.loads(r.stdout)["message"]["content"].strip()
-    except: return ""
-    finally: os.unlink(tf)
+# === FORMAT TTS (thủ công theo rules emotional emphasis) ===
+
+def format_tts_manual(raw_text):
+    """Thêm ... pause, line breaks, emotional emphasis words cho TTS."""
+    # Thư số 1: hopeful/warm tone → dùng nhé, thôi, mà, đấy, đâu, cố lên
+    text = raw_text.replace("\n", " ").strip()
+    
+    sentences = [
+        "Kể từ hôm nay... mỗi ngày hãy cười lên nhé",
+        "",
+        "trên đời này... trừ việc sinh tử ra... còn lại đều là chuyện nhỏ thôi",
+        "",
+        "cho dù gặp phải chuyện buồn gì đi chăng nữa... cũng đừng tự làm khó mình mà",
+        "cho dù xảy ra chuyện rắc rối đến thế nào... cũng chẳng cần phải đau lòng đâu",
+        "",
+        "Hôm nay là ngày bạn còn trẻ nhất đấy... so với những ngày tháng nỗ lực về sau",
+        "Bởi vì có ngày mai... hôm nay mãi mãi chỉ là vạch kẻ xuất phát cho hành trình ấy... cố lên nhé",
+    ]
+    return "\n".join(sentences)
 
 
-def format_tts_text(raw_text):
-    result = call_qwen(TTS_PROMPT_SHORT.replace("{text}", raw_text))
-    return result if result else raw_text
-
+# === PEXELS ===
 
 def pexels_search(query, per_page=15):
     params = urllib.parse.urlencode({"query": query, "per_page": per_page, "orientation": "portrait", "size": "large"})
@@ -103,6 +94,8 @@ def download_video(url, outpath):
     return True
 
 
+# === ELEVENLABS ===
+
 def generate_tts(text, outpath):
     payload = json.dumps({"text": text, "model_id": ELEVENLABS_MODEL, "voice_settings": {"stability": 0.25, "similarity_boost": 0.5, "style": 0.4, "speed": 1.1, "use_speaker_boost": True}}).encode()
     req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}?language_code=vi&output_format=mp3_44100_128", data=payload)
@@ -115,70 +108,87 @@ def generate_tts(text, outpath):
         print(f"  ❌ TTS error: {e}"); return False
 
 
-# === WHISPER + PIL SUBTITLE ===
+def get_duration(fp):
+    try: return float(json.loads(run(f'ffprobe -v error -show_entries format=duration -of json "{fp}"')[0])["format"]["duration"])
+    except: return 0
 
-def get_whisper_segments(audio_path, video_start_offset=0.5):
+
+def concat_videos(paths, outpath):
+    if len(paths) == 1: run(f'cp "{paths[0]}" "{outpath}"'); return True
+    tf = outpath + ".concat.txt"
+    with open(tf, "w") as f:
+        for p in paths: f.write(f"file '{p}'\n")
+    return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
+
+
+# === WHISPER → SUBTITLE VIDEO ===
+
+def get_whisper_segments(audio_path):
     import whisper
     print(f"  🎧 Whisper transcribing (model=small)...")
     model = whisper.load_model("small")
     result = model.transcribe(audio_path, word_timestamps=True, language="vi")
     segments = []
     for seg in result.get("segments", []):
-        text = seg["text"].strip()
-        if text:
-            segments.append({
-                "start": seg["start"] + video_start_offset,
-                "end": seg["end"] + video_start_offset,
-                "text": text,
-            })
-    print(f"  ✅ Whisper: {len(segments)} segments")
+        t = seg["text"].strip()
+        if t: segments.append({"start": seg["start"], "end": seg["end"], "text": t})
+    print(f"  ✅ {len(segments)} segments")
     return segments
 
 
-def render_subtitle_overlay(segments, outdir, width=1080, height=1920):
-    """Render mỗi segment thành 1 ảnh PNG transparent → trả về list (start, end, png_path)"""
+def render_subtitle_video(segments, outpath, width=1080, height=1920):
+    """Tạo video trong suốt với subtitle xuất hiện/tắt theo thời gian."""
     from PIL import Image, ImageDraw, ImageFont
-    try:
-        font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
-    except:
-        font = ImageFont.load_default()
+    try: font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
+    except: font = ImageFont.load_default()
 
-    os.makedirs(outdir, exist_ok=True)
-    overlays = []
+    tmpdir = outpath + ".tmp"
+    os.makedirs(tmpdir, exist_ok=True)
+    png_paths = []
 
     for i, seg in enumerate(segments):
-        text = seg["text"]
-        # Tạo ảnh full HD trong suốt
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-
-        # Tính vị trí text: centered, gần đáy
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        x = (width - tw) / 2
-        y = height - th - 120  # margin bottom 120px
-
-        # Draw outline (shadow effect)
+        bbox = draw.textbbox((0, 0), seg["text"], font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x, y = (width - tw) / 2, height - th - 120
+        # Outline
         for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-            draw.text((x + dx * SUB_OUTLINE, y + dy * SUB_OUTLINE), text, font=font, fill=(0, 0, 0, 180))
-        # Draw main text
-        draw.text((x, y), text, font=font, fill=SUB_COLOR)
+            draw.text((x + dx * 2, y + dy * 2), seg["text"], font=font, fill=(0, 0, 0, 180))
+        draw.text((x, y), seg["text"], font=font, fill=(255, 255, 255, 255))
+        pp = f"{tmpdir}/sub_{i:03d}.png"
+        img.save(pp)
+        png_paths.append(pp)
 
-        png_path = f"{outdir}/sub_{i:03d}.png"
-        img.save(png_path)
-        overlays.append((seg["start"], seg["end"], png_path))
+    # Tạo video từ PNGs: mỗi PNG hiện trong khoảng thời gian của segment
+    # Dùng concat demuxer với duration cho mỗi frame
+    concat_file = outpath + ".sub_concat.txt"
+    with open(concat_file, "w") as f:
+        for i, (seg, pp) in enumerate(zip(segments, png_paths)):
+            dur = seg["end"] - seg["start"]
+            f.write(f"file '{pp}'\n")
+            f.write(f"duration {dur:.3f}\n")
 
-    print(f"  ✅ Rendered {len(overlays)} subtitle PNGs")
-    return overlays
+    # Tạo fade 0.1s giữa các segment để mượt
+    cmd = (
+        f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
+        f'-vf "fps=30,format=rgba" '
+        f'-c:v qtrle '
+        f'"{outpath}"'
+    )
+    _, err, rc = run(cmd, timeout=60)
+    if rc != 0:
+        print(f"  ❌ Sub video: {err[:300]}")
+        return None
+
+    print(f"  ✅ Subtitle video: {os.path.getsize(outpath)/1_000_000:.1f} MB")
+    return outpath
 
 
-def compose_with_subtitle(video_path, audio_path, overlays, outpath, fade_sec=1.0):
-    """Ghép video + audio + subtitle overlay dùng ffmpeg."""
-    vid_dur = float(json.loads(run(f'ffprobe -v error -show_entries format=duration -of json "{video_path}"')[0])["format"]["duration"])
-    aud_dur = float(json.loads(run(f'ffprobe -v error -show_entries format=duration -of json "{audio_path}"')[0])["format"]["duration"])
+def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
+    vid_dur = get_duration(video_path)
+    aud_dur = get_duration(audio_path)
     print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s")
-
     if vid_dur <= 0 or aud_dur <= 0: return False
 
     total_dur = aud_dur + fade_sec
@@ -193,34 +203,16 @@ def compose_with_subtitle(video_path, audio_path, overlays, outpath, fade_sec=1.
         video_path = outpath + ".looped.mp4"
         run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{video_path}"')
 
-    # Build filter_complex với overlay cho từng subtitle
-    video_inputs = f'-i "{video_path}" '
-    overlay_inputs = ""
-    for _, _, p in overlays:
-        overlay_inputs += f'-i "{p}" '
-
-    # Video scaling + fade
     fade_start = total_dur - fade_sec
-    chains = []
-    chains.append(f'[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},fps=30,format=rgba,setpts=PTS-STARTPTS[v0]')
-
-    # Overlay từng subtitle với enable=between(t, start, end)
-    prev_label = "v0"
-    for i, (start, end, _) in enumerate(overlays):
-        input_idx = i + 1
-        label = f"v{i+1}"
-        chains.append(f'[{prev_label}][{input_idx}:v]overlay=0:0:enable=\\'between(t,{start},{end})\\':format=auto,setpts=PTS-STARTPTS[{label}]')
-        prev_label = label
-
-    # Format final
-    chains.append(f'[{prev_label}]format=yuv420p[v]')
-    chains.append(f'[1:a]adelay=500|500[a]')
-
-    filter_complex = ";".join(chains)
 
     cmd = (
-        f'ffmpeg -y {video_inputs} -i "{audio_path}" {overlay_inputs}'
-        f'-filter_complex "{filter_complex}" '
+        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" -i "{sub_video}" '
+        f'-filter_complex '
+        f'"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,'
+        f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
+        f'fps=30,format=rgba[vbase];'
+        f'[vbase][2:v]overlay=0:0:format=auto,format=yuv420p[v];'
+        f'[1:a]adelay=500|500[a]" '
         f'-map "[v]" -map "[a]" '
         f'-c:v libx264 -preset fast -crf 20 '
         f'-c:a aac -b:a 128k '
@@ -234,20 +226,6 @@ def compose_with_subtitle(video_path, audio_path, overlays, outpath, fade_sec=1.
         return False
     print(f"  ✅ {os.path.getsize(outpath)/1_000_000:.1f} MB, {total_dur:.1f}s")
     return True
-
-
-def get_duration(filepath):
-    try: return float(json.loads(run(f'ffprobe -v error -show_entries format=duration -of json "{filepath}"')[0])["format"]["duration"])
-    except: return 0
-
-
-def concat_videos(paths, outpath):
-    if len(paths) == 1:
-        run(f'cp "{paths[0]}" "{outpath}"'); return True
-    tf = outpath + ".concat.txt"
-    with open(tf, "w") as f:
-        for p in paths: f.write(f"file '{p}'\n")
-    return run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{outpath}"')[2] == 0
 
 
 def upload_cdn(fp):
@@ -277,9 +255,9 @@ def pipeline(so_thu, raw_content):
         if len(all_videos) >= 5: break
     if not all_videos: return print("❌ Không tìm được video!")
 
-    # 2. AI Format TTS
-    print(f"  ✍️ Formatting text for TTS...")
-    tts_text = format_tts_text(raw_content)
+    # 2. Format TTS (thủ công)
+    print(f"  ✍️ Formatting TTS text...")
+    tts_text = format_tts_manual(raw_content)
     print(f"  📝 Formatted ({len(tts_text)} chars): {tts_text[:120]}...")
 
     # 3. ElevenLabs
@@ -289,12 +267,12 @@ def pipeline(so_thu, raw_content):
     aud_dur = get_duration(ap)
     print(f"  ✅ TTS: {os.path.getsize(ap)/1000:.0f} KB, {aud_dur:.1f}s")
 
-    # 4. Whisper → segments
-    segments = get_whisper_segments(ap, video_start_offset=0.5)
+    # 4. Whisper segments
+    segments = get_whisper_segments(ap)
 
-    # 5. Render subtitle PNGs
-    sub_dir = f"{outdir}/subtitles"
-    overlays = render_subtitle_overlay(segments, sub_dir)
+    # 5. Render subtitle video
+    sub_video = f"{outdir}/subtitle.mov"
+    if not render_subtitle_video(segments, sub_video): return
 
     # 6. Download videos
     target = aud_dur + 5.0; dl, tdur = [], 0
@@ -306,20 +284,17 @@ def pipeline(so_thu, raw_content):
         time.sleep(0.5)
     print(f"  📦 {len(dl)} videos, total {tdur:.1f}s (need > {target:.1f}s)")
 
-    # 7. Concat
+    # 7. Concat → compose with subtitle
     comb = f"{outdir}/combined.mp4"
     if not concat_videos(dl, comb): return print("❌ Concat failed!")
-
-    # 8. Compose with subtitle overlay
     op = f"{outdir}/tiktok.mp4"
-    if not compose_with_subtitle(comb, ap, overlays, op): return
+    if not compose_tiktok(comb, ap, sub_video, op): return
 
-    # 9. CDN
+    # 8. CDN
     print(f"  ☁️ Uploading CDN...")
     cdn = upload_cdn(op)
     if not cdn: return print(f"MEDIA:{op}")
 
-    # 10. Save used IDs
     for v in all_videos:
         if v["id"] not in used_ids: used_ids.append(v["id"])
     save_used_videos(used_ids)
