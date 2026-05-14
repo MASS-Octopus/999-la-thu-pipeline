@@ -300,52 +300,64 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
         
         for sent in sentences:
             page.evaluate(f"window.setText({json.dumps(sent)})")
-            page.wait_for_timeout(250)
+            page.wait_for_timeout(int(FADE_MS * 1000) + 200)  # đợi fade animation xong
             pp = f"{tmpdir}/sub_{sent[:20]}.png"
             page.screenshot(path=pp, omit_background=True)
             png_paths[sent] = pp
         
         browser.close()
     
-    # Build concat: initial 2s blank + segments (shifted) + ending 3s blank
-    concat_file = outpath + ".sub_concat.txt"
-    with open(concat_file, "w") as f:
-        f.write(f"file '{blank_png}'\nduration {VIDEO_START_DELAY:.3f}\n")
-        last_end = VIDEO_START_DELAY
+    # Build subtitle: mỗi câu → short video clip (loop PNG), ghép bằng concat
+    sub_parts = []
+    cum_end = VIDEO_START_DELAY
+    
+    for seg in segments:
+        shifted_start = seg["start"] + VIDEO_START_DELAY
+        shifted_end = seg["end"] + VIDEO_START_DELAY
         
-        for seg in segments:
-            shifted_start = seg["start"] + VIDEO_START_DELAY
-            shifted_end = seg["end"] + VIDEO_START_DELAY
-            
-            if seg.get("blank"):
+        if seg.get("blank"):
+            dur = shifted_end - shifted_start
+            if dur > 0.001:
+                # Tạo blank video clip
+                bp = f"{tmpdir}/part_{len(sub_parts):03d}_blank.mov"
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi",
+                    "-i", f"color=c=black@0.0:s={width}x{height}:d={dur:.3f},format=rgba",
+                    "-c:v", "qtrle", bp
+                ], capture_output=True, timeout=30)
+                sub_parts.append((bp, dur, None))
+        else:
+            pp = png_paths.get(seg["text"])
+            if pp:
                 dur = shifted_end - shifted_start
-                if dur > 0:
-                    f.write(f"file '{blank_png}'\nduration {dur:.3f}\n")
-                last_end = shifted_end
-            else:
-                gap = shifted_start - last_end
-                if gap > 0.001:
-                    f.write(f"file '{blank_png}'\nduration {gap:.3f}\n")
-                
-                pp = png_paths.get(seg["text"])
-                if pp:
-                    dur = shifted_end - shifted_start
-                    dur = max(dur, 0.8)
-                    f.write(f"file '{pp}'\nduration {dur:.3f}\n")
-                last_end = shifted_end
-        
-        # Ending 3s blank
-        f.write(f"file '{blank_png}'\nduration {VIDEO_END_PAD:.3f}\n")
+                dur = max(dur, 0.8)
+                # Loop PNG thành video clip
+                vp = f"{tmpdir}/part_{len(sub_parts):03d}_text.mov"
+                subprocess.run([
+                    "ffmpeg", "-y", "-loop", "1",
+                    "-i", pp,
+                    "-vf", f"fps=30,format=rgba",
+                    "-c:v", "qtrle",
+                    "-t", f"{dur:.3f}",
+                    vp
+                ], capture_output=True, timeout=30)
+                sub_parts.append((vp, dur, pp))
+    
+    # Concat tất cả clip bằng concat protocol
+    parts_file = outpath + ".parts.txt"
+    total_dur = 0
+    with open(parts_file, "w") as f:
+        for vp, dur, _ in sub_parts:
+            f.write(f"file '{vp}'\n")
+            total_dur += dur
     
     cmd = (
-        f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
-        f'-vf "fps=30,format=rgba" -c:v qtrle '
-        f'-t {VIDEO_START_DELAY + segments[-1]["end"] + VIDEO_END_PAD:.1f} '
-        f'"{outpath}"'
+        f'ffmpeg -y -f concat -safe 0 -i "{parts_file}" '
+        f'-c copy "{outpath}"'
     )
-    _, err, rc = run(cmd, timeout=60)
+    _, err, rc = run(cmd, timeout=120)
     if rc != 0:
-        print(f"  ❌ Sub video: {err[:300]}")
+        print(f"  ❌ Sub concat: {err[:300]}")
         return None
     
     print(f"  ✅ Subtitle video: {os.path.getsize(outpath)/1_000_000:.1f} MB")
