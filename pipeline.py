@@ -114,8 +114,8 @@ def generate_tts_with_timestamps(text, outpath):
         print(f"  ❌ TTS error: {e}"); return False, None
 
 
-def alignment_to_segments(alignment, tts_text):
-    """Chia segments theo từng câu (. trong TTS text). Dùng prefix-matching."""
+def alignment_to_segments(alignment, sentences):
+    """Map ElevenLabs alignment words → sentence timing (sentences from format_tts_manual)."""
     chars = alignment["characters"]
     starts = alignment["character_start_times_seconds"]
     ends = alignment["character_end_times_seconds"]
@@ -148,66 +148,38 @@ def alignment_to_segments(alignment, tts_text):
             skip.add(i + 1)
     words = [w for j, w in enumerate(words) if j not in skip]
 
-    # Split TTS text thành các câu (phân cách bởi ". ")
-    parts = tts_text.split(". ")
-    raw_sentences = []
-    for p in parts:
-        s = p.strip()
-        if not s: continue
-        if not s.endswith("."):
-            s += "."
-        raw_sentences.append(s)
-
     def norm(s):
         import re
         s = re.sub(r'\.\.\.', ' ', s)
         s = re.sub(r'\.', '', s)
         return re.sub(r'\s+', ' ', s).strip()
 
-    # Prefix-match words vào từng câu
+    # Prefix-match words → sentences
     segments = []
     wi = 0
-    for sent in raw_sentences:
+    for sent in sentences:
         target = norm(sent)
         if not target: continue
-        
         sent_words = []
         pos = 0
-        start_wi = wi
-        
         while wi < len(words) and pos < len(target):
             w = words[wi]
-            # So khớp: target[pos:] có bắt đầu bằng từ này không?
             if target[pos:].startswith(w["text"]):
                 sent_words.append(w)
                 pos += len(w["text"])
-                # Bỏ qua whitespace sau từ
                 while pos < len(target) and target[pos] == " ":
                     pos += 1
                 wi += 1
             else:
-                # Alignment sai → skip từ này, thử từ tiếp
                 wi += 1
-        
         if sent_words:
-            # Dùng raw sentence cho display
-            segments.append({
-                "start": sent_words[0]["start"],
-                "end": sent_words[-1]["end"],
-                "text": sent,
-                "blank": False
-            })
-            
-            # Luôn chèn blank giữa các câu
+            segments.append({"start": sent_words[0]["start"], "end": sent_words[-1]["end"],
+                             "text": sent, "blank": False})
             if wi < len(words):
                 gap_end = max(sent_words[-1]["end"] + 0.3, words[wi]["start"])
-                segments.append({"start": sent_words[-1]["end"], "end": gap_end,
-                                 "text": "", "blank": True})
-        else:
-            # Sentence không match được word nào, reset wi
-            wi = start_wi + 1
+                segments.append({"start": sent_words[-1]["end"], "end": gap_end, "text": "", "blank": True})
 
-    print(f"  ✅ {len(segments)} segments ({len(raw_sentences)} câu + blanks)")
+    print(f"  ✅ {len(segments)} segments ({len(sentences)} câu + blanks)")
     return segments
 
 
@@ -444,8 +416,8 @@ def pipeline(so_thu, raw_content):
     aud_dur = get_duration(ap)
     print(f"  ✅ TTS: {os.path.getsize(ap)/1000:.0f} KB, {aud_dur:.1f}s")
 
-    # 4. Alignment → segments (theo từng câu)
-    segments = alignment_to_segments(alignment, tts_text)
+    # 4. Alignment → segments (truyền sentences từ format)
+    segments = alignment_to_segments(alignment, sentences)
 
     # 5. Render subtitle HTML → video
     sub_video = f"{outdir}/subtitle.mov"
