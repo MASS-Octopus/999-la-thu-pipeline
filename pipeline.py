@@ -382,20 +382,14 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
 
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
     delay_ms = int(VIDEO_START_DELAY * 1000)
-
-    if vid_dur < total_dur:
-        loops = int(total_dur / vid_dur) + 1
-        print(f"  🔄 Looping {loops}x")
-        tf = outpath + ".concat_loop.txt"
-        with open(tf, "w") as f:
-            for _ in range(loops): f.write(f"file '{video_path}'\n")
-        video_path = outpath + ".looped.mp4"
-        run(f'ffmpeg -y -f concat -safe 0 -i "{tf}" -c copy "{video_path}"')
-
     fade_start = total_dur - fade_sec
 
+    # Loop video trực tiếp trong filter_complex (không cần concat)
     cmd = (
-        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" -i "{sub_video}" '
+        f'ffmpeg -y '
+        f'-stream_loop -1 -i "{video_path}" '
+        f'-i "{audio_path}" '
+        f'-i "{sub_video}" '
         f'-filter_complex '
         f'"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,'
         f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
