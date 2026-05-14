@@ -26,10 +26,11 @@ PEXELS_QUERIES = [
     "meadow grass wind soft", "lavender field purple calm",
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
-
+# Subtitle style
 SUB_FONT = "/System/Library/Fonts/SFNS.ttf"  # SF Pro
-SUB_SIZE = 44
+SUB_SIZE = 46  # +2px
 SUB_SIDE_PAD = 100  # padding 2 bên tránh TikTok UI
+SUB_OUTLINE = 3  # semi-bold giả lập
 SUB_BOTTOM_MARGIN = 140  # đáy margin để không bị che
 
 
@@ -164,7 +165,7 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
         line_heights = [draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1] for line in lines]
         total_h = sum(line_heights) + (len(lines) - 1) * 8  # line spacing 8px
 
-        y = height - total_h - SUB_BOTTOM_MARGIN
+        y = (height - total_h) / 2  # center dọc
 
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
@@ -174,7 +175,7 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
 
             # Outline
             for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-                draw.text((x + dx * 2, y + dy * 2), line, font=font, fill=(0, 0, 0, 180))
+                draw.text((x + dx * SUB_OUTLINE, y + dy * SUB_OUTLINE), line, font=font, fill=(0, 0, 0, 180))
             draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
             y += lh + 8
