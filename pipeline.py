@@ -14,7 +14,7 @@ ELEVENLABS_KEY = "a861a7a1c92c5fa8fef4c81a01d2b924a3745d824b902aa6a46b2da1de7e21
 ELEVENLABS_VOICE = "BdXlJle17DV6QV63lzql"
 ELEVENLABS_MODEL = "eleven_v3"
 CDN_URL = "http://127.0.0.1:9876/publish"
-LETTERS_JSON = "/Volumes/ServerData/Users/octopus/Downloads/sach-chua-lanh/999-la-thu-gui-cho-chinh-minh.json"
+LETTERS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "letters.json")
 STATE_FILE = os.path.expanduser("~/.hermes/state/pexels_used_videos.json")
 
 PEXELS_QUERIES = [
