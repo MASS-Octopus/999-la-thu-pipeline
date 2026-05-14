@@ -435,16 +435,53 @@ def pipeline(so_thu, raw_content):
     # 5. Render subtitle HTML → PNGs
     sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
     
-    # 6. Pick 1 video + loop với -stream_loop -1 (không cần concat)
+    # 6. Download nhiều video → concat đến khi tổng duration > total_dur + buffer
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
-    best_video = max(all_videos, key=lambda v: v.get("duration", 0))
-    print(f"  🎬 Selected video: id={best_video['id']}, {best_video['duration']}s → loop")
-    fp = f"{outdir}/vid_{best_video['id']}.mp4"
-    if not download_video(get_best_file(best_video), fp): return
+    buffer = 3.0  # thêm buffer để concat thoải mái
+    target = total_dur + buffer
     
-    # 7. Build TikTok: loop video + overlay subtitle absolute timing
+    # Sort video theo duration giảm dần
+    all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
+    
+    downloaded = []  # list of file paths
+    total_downloaded = 0.0
+    
+    for v in all_videos:
+        if total_downloaded >= target:
+            break
+        fp = f"{outdir}/vid_{v['id']}.mp4"
+        if not download_video(get_best_file(v), fp):
+            continue
+        d = get_duration(fp)
+        downloaded.append(fp)
+        total_downloaded += d
+        print(f"    📥 Downloaded id={v['id']}, {d:.1f}s (total: {total_downloaded:.1f}s / target: {target:.1f}s)")
+    
+    if not downloaded:
+        return print("❌ Không download được video nào!")
+    
+    if len(downloaded) == 1 and total_downloaded < total_dur:
+        # Fallback: 1 video duy nhất & ngắn hơn total_dur → stream_loop
+        print(f"  🔄 Fallback: stream_loop (1 video {total_downloaded:.1f}s < {total_dur:.1f}s)")
+        video_fp = downloaded[0]
+    elif len(downloaded) > 1:
+        # Concat tất cả video đã download (re-encode)
+        print(f"  🔗 Concatenating {len(downloaded)} videos ({total_downloaded:.1f}s total)...")
+        concat_fp = f"{outdir}/concat_bg.mp4"
+        if not concat_videos(downloaded, concat_fp):
+            # Fallback: dùng video dài nhất + stream_loop
+            print(f"  ⚠️ Concat failed → fallback stream_loop")
+            video_fp = downloaded[0]
+        else:
+            video_fp = concat_fp
+    else:
+        video_fp = downloaded[0]
+    
+    print(f"  🎬 Final video: {video_fp}, {get_duration(video_fp):.1f}s")
+    
+    # 7. Build TikTok: concat video + overlay subtitle absolute timing
     op = f"{outdir}/tiktok.mp4"
-    if not build_tiktok(fp, ap, sub_pngs, segments, op): return
+    if not build_tiktok(video_fp, ap, sub_pngs, segments, op): return
 
     # 8. CDN
     print(f"  ☁️ Uploading CDN...")
