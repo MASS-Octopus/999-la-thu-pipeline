@@ -79,6 +79,7 @@ Rules:
 - Do NOT overuse — max 1 emphasis word per 2 sentences
 - Match the emotional tone of the input (sad, hopeful, tired, warm, nostalgic...)
 - Output MUST be under 500 characters total
+- Output in Vietnamese ONLY. Never output Chinese characters, Hanzi, Kanji, or any CJK script.
 - Output plain text only, no explanation
 
 Input: {text}
@@ -109,12 +110,16 @@ def _call_ollama_format(prompt):
 
 
 def _parse_formatted_text(text):
-    """Parse LLM output thành list sentences. Tách theo dấu câu + line breaks."""
+    """Parse LLM output thành list sentences. Tách theo dấu câu + line breaks.
+    Tự động strip Chinese/Hanzi characters (code-switch safety net)."""
     import re
     # Clean markdown code fences
-    text = re.sub(r'^```[^\n]*\n', '', text)
-    text = re.sub(r'\n```\s*$', '', text)
+    text = re.sub(r'^\`\`\`[^\n]*\n', '', text)
+    text = re.sub(r'\n\`\`\`\s*$', '', text)
     text = text.strip()
+    
+    # Safety net: strip Chinese/Hanzi/Kanji characters (qwen code-switch protection)
+    text = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+', '', text).strip()
     
     # Split by sentence-ending punctuation + line breaks
     # First split by explicit line breaks (LLM uses these for pauses)
