@@ -307,10 +307,9 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
         
         browser.close()
     
-    # Build concat: initial 2s blank + segments (shifted by VIDEO_START_DELAY)
+    # Build concat: initial 2s blank + segments (shifted) + ending 3s blank
     concat_file = outpath + ".sub_concat.txt"
     with open(concat_file, "w") as f:
-        # Initial delay blank
         f.write(f"file '{blank_png}'\nduration {VIDEO_START_DELAY:.3f}\n")
         last_end = VIDEO_START_DELAY
         
@@ -331,9 +330,12 @@ def render_subtitle_html(sentences, segments, outpath, width=1080, height=1920):
                 pp = png_paths.get(seg["text"])
                 if pp:
                     dur = shifted_end - shifted_start
-                    dur = max(dur, 0.8)  # min 0.8s mỗi câu
+                    dur = max(dur, 0.8)
                     f.write(f"file '{pp}'\nduration {dur:.3f}\n")
                 last_end = shifted_end
+        
+        # Ending 3s blank
+        f.write(f"file '{blank_png}'\nduration {VIDEO_END_PAD:.3f}\n")
     
     cmd = (
         f'ffmpeg -y -f concat -safe 0 -i "{concat_file}" '
@@ -380,7 +382,7 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
         f'-c:v libx264 -preset fast -crf 20 '
         f'-c:a aac -b:a 128k '
         f'-movflags +faststart '
-        f'-t {total_dur} -shortest '
+        f'-t {total_dur} '
         f'"{outpath}"'
     )
     _, err, rc = run(cmd, timeout=180)
