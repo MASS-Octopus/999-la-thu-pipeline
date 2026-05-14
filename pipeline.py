@@ -145,15 +145,15 @@ def alignment_to_segments(alignment, audio_path=None):
     if word_chars:
         words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
 
-    # Fix alignment errors: cap end nếu bị kéo quá start của từ kế
+    # Fix alignment errors + skip dur=0 words
+    skip = set()
     for i in range(len(words) - 1):
         w, nxt = words[i], words[i + 1]
         if w["end"] > nxt["start"] + 0.05:
             w["end"] = nxt["start"] - 0.001
-        # Skip word có duration ~0 (alignment error)
         if abs(nxt["end"] - nxt["start"]) < 0.001:
-            words[i + 1] = None  # mark để xóa
-    words = [w for w in words if w is not None]
+            skip.add(i + 1)
+    words = [w for j, w in enumerate(words) if j not in skip]
 
     # Merge 2-3 words per segment, chèn blank khi gap giữa words > 0.3s
     merged = []
