@@ -27,11 +27,12 @@ PEXELS_QUERIES = [
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
 # Subtitle style
-SUB_FONT = "/System/Library/Fonts/SFNS.ttf"  # SF Pro
-SUB_SIZE = 46  # +2px
-SUB_SIDE_PAD = 100  # padding 2 bên tránh TikTok UI
-SUB_OUTLINE = 3  # semi-bold giả lập
-SUB_BOTTOM_MARGIN = 140  # đáy margin để không bị che
+SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold.ttf"  # SN Pro SemiBold (weight 600)
+SUB_SIZE = 46
+SUB_SIDE_PAD = 100
+SUB_OUTLINE = 3
+SUB_BG_ALPHA = 100  # overlay nền mờ sau text (0-255)
+SUB_BG_PAD = 16  # padding overlay quanh text
 
 
 def run(cmd, timeout=60):
@@ -161,11 +162,20 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # Tính tổng chiều cao các dòng
+        # Tính tổng chiều cao các dòng + chiều rộng tối đa
         line_heights = [draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1] for line in lines]
+        line_widths = [draw.textbbox((0, 0), line, font=font)[2] - draw.textbbox((0, 0), line, font=font)[0] for line in lines]
         total_h = sum(line_heights) + (len(lines) - 1) * 8  # line spacing 8px
+        max_lw = max(line_widths)
 
         y = (height - total_h) / 2  # center dọc
+
+        # Overlay nền mờ sau text
+        bg_x1 = (width - max_lw) / 2 - SUB_BG_PAD
+        bg_y1 = y - SUB_BG_PAD
+        bg_x2 = (width + max_lw) / 2 + SUB_BG_PAD
+        bg_y2 = y + total_h + SUB_BG_PAD
+        draw.rounded_rectangle([bg_x1, bg_y1, bg_x2, bg_y2], radius=20, fill=(0, 0, 0, SUB_BG_ALPHA))
 
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
@@ -266,7 +276,7 @@ def compose_tiktok(video_path, audio_path, sub_video, outpath, fade_sec=1.0):
         f'fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},'
         f'fps=30,format=rgba[vbase];'
         f'[vbase][2:v]overlay=0:0:format=auto,format=yuv420p[v];'
-        f'[1:a]adelay=500|500[a]" '
+        f'[1:a]anull[a]" '
         f'-map "[v]" -map "[a]" '
         f'-c:v libx264 -preset fast -crf 20 '
         f'-c:a aac -b:a 128k '
