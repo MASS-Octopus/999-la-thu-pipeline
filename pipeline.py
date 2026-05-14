@@ -27,12 +27,13 @@ PEXELS_QUERIES = [
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
 # Subtitle style
-SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold.ttf"  # SN Pro SemiBold (weight 600)
+SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold-VI.ttf"  # SN Pro SemiBold, vietnamese subset
 SUB_SIZE = 46
 SUB_SIDE_PAD = 100
 SUB_OUTLINE = 3
-SUB_BG_ALPHA = 100  # overlay nền mờ sau text (0-255)
+SUB_BG_ALPHA = 50  # overlay nền mờ (giảm để hòa video)
 SUB_BG_PAD = 16  # padding overlay quanh text
+SUB_BG_BLUR = 12  # Gaussian blur radius cho overlay (0 = không blur)
 
 
 def run(cmd, timeout=60):
@@ -142,7 +143,7 @@ def get_whisper_segments(audio_path):
 
 def render_subtitle_video(segments, outpath, width=1080, height=1920):
     """Tạo video trong suốt với subtitle xuất hiện/tắt theo thời gian."""
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
     try:
         font = ImageFont.truetype(SUB_FONT, SUB_SIZE)
@@ -156,39 +157,55 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
     text_width = width - 2 * SUB_SIDE_PAD  # 880px cho nội dung
 
     for i, seg in enumerate(segments):
-        # Wrap text theo text_width
         lines = wrap_text(seg["text"], font, text_width)
 
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # Tính tổng chiều cao các dòng + chiều rộng tối đa
         line_heights = [draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1] for line in lines]
         line_widths = [draw.textbbox((0, 0), line, font=font)[2] - draw.textbbox((0, 0), line, font=font)[0] for line in lines]
-        total_h = sum(line_heights) + (len(lines) - 1) * 8  # line spacing 8px
+        total_h = sum(line_heights) + (len(lines) - 1) * 8
         max_lw = max(line_widths)
 
-        y = (height - total_h) / 2  # center dọc
+        y = (height - total_h) / 2
 
-        # Overlay nền mờ sau text
-        bg_x1 = (width - max_lw) / 2 - SUB_BG_PAD
-        bg_y1 = y - SUB_BG_PAD
-        bg_x2 = (width + max_lw) / 2 + SUB_BG_PAD
-        bg_y2 = y + total_h + SUB_BG_PAD
-        draw.rounded_rectangle([bg_x1, bg_y1, bg_x2, bg_y2], radius=20, fill=(0, 0, 0, SUB_BG_ALPHA))
+        # Overlay: vẽ trên layer riêng → blur → paste vào ảnh chính
+        if SUB_BG_BLUR > 0:
+            bg_x1 = int((width - max_lw) / 2 - SUB_BG_PAD)
+            bg_y1 = int(y - SUB_BG_PAD)
+            bg_x2 = int((width + max_lw) / 2 + SUB_BG_PAD)
+            bg_y2 = int(y + total_h + SUB_BG_PAD)
+            bg_w = bg_x2 - bg_x1
+            bg_h = bg_y2 - bg_y1
 
+            # Vẽ overlay lên layer nhỏ (chỉ vùng cần)
+            bg_layer = Image.new("RGBA", (bg_w + SUB_BG_BLUR * 4, bg_h + SUB_BG_BLUR * 4), (0, 0, 0, 0))
+            bg_draw = ImageDraw.Draw(bg_layer)
+            bg_draw.rounded_rectangle(
+                [SUB_BG_BLUR * 2, SUB_BG_BLUR * 2, bg_w + SUB_BG_BLUR * 2, bg_h + SUB_BG_BLUR * 2],
+                radius=20, fill=(0, 0, 0, SUB_BG_ALPHA)
+            )
+            bg_layer = bg_layer.filter(ImageFilter.GaussianBlur(SUB_BG_BLUR))
+            img.paste(bg_layer, (bg_x1 - SUB_BG_BLUR * 2, bg_y1 - SUB_BG_BLUR * 2), bg_layer)
+        else:
+            bg_x1 = (width - max_lw) / 2 - SUB_BG_PAD
+            bg_y1 = y - SUB_BG_PAD
+            bg_x2 = (width + max_lw) / 2 + SUB_BG_PAD
+            bg_y2 = y + total_h + SUB_BG_PAD
+            draw.rounded_rectangle([bg_x1, bg_y1, bg_x2, bg_y2], radius=20, fill=(0, 0, 0, SUB_BG_ALPHA))
+
+        # Vẽ text
+        cur_y = y
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             lw = bbox[2] - bbox[0]
             lh = bbox[3] - bbox[1]
-            x = (width - lw) / 2  # canh giữa
+            x = (width - lw) / 2
 
-            # Outline
             for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-                draw.text((x + dx * SUB_OUTLINE, y + dy * SUB_OUTLINE), line, font=font, fill=(0, 0, 0, 180))
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-
-            y += lh + 8
+                draw.text((x + dx * SUB_OUTLINE, cur_y + dy * SUB_OUTLINE), line, font=font, fill=(0, 0, 0, 180))
+            draw.text((x, cur_y), line, font=font, fill=(255, 255, 255, 255))
+            cur_y += lh + 8
 
         pp = f"{tmpdir}/sub_{i:03d}.png"
         img.save(pp)
