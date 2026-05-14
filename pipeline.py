@@ -28,7 +28,7 @@ PEXELS_QUERIES = [
 ]
 # Subtitle style
 SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold-VI.ttf"  # SN Pro SemiBold, vietnamese subset
-SUB_SIZE = 46
+SUB_SIZE = 48  # +2px
 SUB_SIDE_PAD = 100
 SUB_OUTLINE = 3
 SUB_BG_ALPHA = 50  # overlay nền mờ (giảm để hòa video)
@@ -117,8 +117,8 @@ def generate_tts_with_timestamps(text, outpath):
         print(f"  ❌ TTS error: {e}"); return False, None
 
 
-def alignment_to_segments(alignment):
-    """Convert ElevenLabs char-level alignment → word-level segments."""
+def alignment_to_segments(alignment, audio_path=None):
+    """Convert ElevenLabs char-level alignment → segments, phát hiện silence gaps."""
     chars = alignment["characters"]
     starts = alignment["character_start_times_seconds"]
     ends = alignment["character_end_times_seconds"]
@@ -145,13 +145,50 @@ def alignment_to_segments(alignment):
     if word_chars:
         words.append({"start": word_start, "end": word_end, "text": "".join(word_chars)})
 
-    # 1 word = 1 segment (đồng bộ tuyệt đối)
-    merged = []
-    for w in words:
-        merged.append(w)
+    # Fix alignment errors: cap end nếu bị kéo quá start của từ kế
+    for i in range(len(words) - 1):
+        w, nxt = words[i], words[i + 1]
+        if w["end"] > nxt["start"] + 0.05:
+            w["end"] = nxt["start"] - 0.001
+        # Skip word có duration ~0 (alignment error)
+        if abs(nxt["end"] - nxt["start"]) < 0.001:
+            words[i + 1] = None  # mark để xóa
+    words = [w for w in words if w is not None]
 
-    print(f"  ✅ {len(merged)} subtitle segments")
-    return merged
+    # Merge 2-3 words per segment, chèn blank khi gap giữa words > 0.3s
+    merged = []
+    buf = []
+    for i, w in enumerate(words):
+        # Check gap từ word trước đó
+        if buf:
+            gap = w["start"] - buf[-1]["end"]
+            if gap > 0.3:
+                # Force flush current buf, insert blank
+                merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
+                               "text": " ".join(wi["text"] for wi in buf), "blank": False})
+                merged.append({"start": buf[-1]["end"], "end": w["start"], "text": "", "blank": True})
+                buf = []
+
+        buf.append(w)
+        if len(buf) >= 3:
+            merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
+                           "text": " ".join(wi["text"] for wi in buf), "blank": False})
+            buf = []
+
+    if buf:
+        merged.append({"start": buf[0]["start"], "end": buf[-1]["end"],
+                       "text": " ".join(w["text"] for w in buf), "blank": False})
+
+    # Remove consecutive blanks, merge gap blanks
+    cleaned = []
+    for s in merged:
+        if s["blank"] and cleaned and cleaned[-1]["blank"]:
+            cleaned[-1]["end"] = s["end"]
+        else:
+            cleaned.append(s)
+
+    print(f"  ✅ {len(cleaned)} subtitle segments")
+    return cleaned
 
 
 def get_duration(fp):
@@ -182,6 +219,13 @@ def render_subtitle_video(segments, outpath, width=1080, height=1920):
     text_width = width - 2 * SUB_SIDE_PAD  # 880px cho nội dung
 
     for i, seg in enumerate(segments):
+        if seg.get("blank"):
+            # Blank segment → transparent PNG
+            pp = f"{tmpdir}/sub_blank_{i:03d}.png"
+            Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(pp)
+            png_paths.append(pp)
+            continue
+
         lines = wrap_text(seg["text"], font, text_width)
 
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
