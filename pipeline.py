@@ -64,10 +64,11 @@ TTS_FORMAT_PROMPT = """CRITICAL RULE: Output VIETNAMESE ONLY. Never output Chine
 You are a TTS emotional text formatter. Your job is to convert a short personal monologue into expressive, emotionally rich TTS-optimized text — written as if a close friend is speaking warmly to their best friend.
 
 Rules:
+- NO INTRO, NO EXPLANATION, NO META — start directly with the formatted text. Never output phrases like "Dưới đây là...", "Here is...", "Phiên bản..."
 - Keep the original meaning and emotion 100%
 - Write as a close friend speaking to their best friend — always use full natural sentences with subject and verb. Người nói xưng "tôi/mình", gọi người nghe là "bạn/cậu". Never drop the subject or verb. Avoid fragment phrases that sound like captions or slogans.
 - Replace punctuation with natural pauses: use ... for short pause, line break for medium pause, empty line for long pause
-- Remove markdown, symbols, parentheses, brackets
+- Remove markdown, symbols, parentheses, brackets, quotes
 - Split long sentences into shorter breath-sized chunks
 - Add emotional emphasis words naturally into the flow:
   - Softness/sadness: thật sự... mà... ấy... nhỉ... thôi... vậy đó... chứ sao... buồn lắm... khó lắm... nặng lòng lắm... biết làm sao giờ...
@@ -116,7 +117,7 @@ def _call_ollama_format(prompt):
         "model": OLLAMA_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 1024, "think": False}
+        "options": {"temperature": 0.7, "num_predict": 2048, "think": False}
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload)
     req.add_header("Content-Type", "application/json")
