@@ -90,7 +90,24 @@ Output: TTS-ready plain text, written as a warm friend speaking to their best fr
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "qwen3.5:cloud"  # model chính cho format text
+OLLAMA_MODEL = "gemini-3-flash-preview:cloud"  # model chính cho format text
+
+
+def clean_vni_errors(text):
+    """Clean common VNI/Times OCR artifacts from Vietnamese text."""
+    import re
+    # Remove standalone z/zZ artifacts (OCR noise from page numbers)
+    text = re.sub(r'\bz\s*zZ?\b', '', text)
+    # Remove trailing artifacts like "z FÁ", "z zZ Bức thư thứ..."
+    text = re.sub(r'\bz\s+\w+\s*$', '', text)
+    # Fix common mixed-case errors: uppercase letter at end of lowercase word
+    # "giaI" → "giai", "coI" → "coi", "saI" → "sai", "aI" → "ai"
+    text = re.sub(r'\b([a-zà-ỹ]+)([A-Z])\b', lambda m: m.group(1) + m.group(2).lower(), text)
+    # Fix "nỰC" → "nực", "CƯỜI" → "cười" (VNI all-caps diacritics)
+    text = re.sub(r'Ự', 'ự', text).strip()
+    # Clean multiple spaces
+    text = re.sub(r'\s{3,}', ' ', text)
+    return text.strip()
 
 
 def _call_ollama_format(prompt):
@@ -554,9 +571,10 @@ def pipeline(so_thu, raw_content):
         if len(all_videos) >= 5: break
     if not all_videos: return print("❌ Không tìm được video!")
 
-    # 2. Format TTS (LLM via Ollama, manual fallback) → trả về (tts_text, sentences)
+    # 2. Clean font errors → Format TTS (LLM via Ollama, manual fallback)
     print(f"  ✍️ Formatting TTS text (LLM)...")
-    tts_text, sentences = format_tts_ai(raw_content)
+    cleaned = clean_vni_errors(raw_content)
+    tts_text, sentences = format_tts_ai(cleaned)
     print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
     # In ra dòng đặc biệt để trigger.py capture
     print(f"FORMATTED_TEXT:{tts_text}")
