@@ -111,6 +111,36 @@ def clean_vni_errors(text):
     return text.strip()
 
 
+def fix_raw_text_ai(raw_text):
+    """Dùng LLM sửa raw OCR text → câu hoàn chỉnh, không mất chữ, không ngắt giữa chừng."""
+    prompt = f"""REPAIR OCR-DAMAGED VIETNAMESE TEXT. The input is raw OCR output that may have:
+- Dropped characters or broken words
+- Mid-sentence truncation
+- VNI encoding artifacts
+- Missing punctuation
+- Nonsense fragments
+
+Your job:
+- Restore the complete, natural Vietnamese sentence
+- Fix broken words and missing characters by inferring from context
+- Remove OCR noise (z, FÁ, zZ, page numbers, headers like "Bức thư thứ...")
+- Add proper punctuation and capitalization
+- If the text is clearly truncated mid-sentence, complete it naturally based on context
+- Output ONLY the repaired text, no explanation, no intro
+- Vietnamese ONLY
+
+Input: {raw_text}
+
+Output:"""
+    result = _call_ollama_format(prompt)
+    if result:
+        import re
+        result = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf]+', '', result).strip()
+        return result
+    print("  ⚠️ AI fix failed → keep raw")
+    return raw_text
+
+
 def _call_ollama_format(prompt):
     """Gọi Ollama API để format raw text → emotional TTS text."""
     payload = json.dumps({
@@ -572,9 +602,12 @@ def pipeline(so_thu, raw_content):
         if len(all_videos) >= 5: break
     if not all_videos: return print("❌ Không tìm được video!")
 
-    # 2. Clean font errors → Format TTS (LLM via Ollama, manual fallback)
+    # 2. AI fix raw OCR → clean font errors → Format TTS
+    print(f"  🔧 Fixing raw OCR text...")
+    fixed = fix_raw_text_ai(raw_content)
+    print(f"  📝 OCR fixed ({len(raw_content)}→{len(fixed)} chars): {fixed[:120]}...")
     print(f"  ✍️ Formatting TTS text (LLM)...")
-    cleaned = clean_vni_errors(raw_content)
+    cleaned = clean_vni_errors(fixed)
     tts_text, sentences = format_tts_ai(cleaned)
     print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
     # In ra dòng đặc biệt để trigger.py capture
