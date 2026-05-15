@@ -88,7 +88,7 @@ Output: TTS-ready plain text, written as a warm friend speaking to their best fr
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "qwen3-coder-next:cloud"  # model chính cho format text
+OLLAMA_MODEL = "qwen3.5:cloud"  # model chính cho format text
 
 
 def _call_ollama_format(prompt):
@@ -97,7 +97,7 @@ def _call_ollama_format(prompt):
         "model": OLLAMA_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 1024}
+        "options": {"temperature": 0.7, "num_predict": 1024, "think": false}
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload)
     req.add_header("Content-Type", "application/json")
