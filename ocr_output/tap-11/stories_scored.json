@@ -1,0 +1,169 @@
+{
+  "tap": 11,
+  "book": "Hạt Giống Tâm Hồn - Những Trải Nghiệm Cuộc Sống (Stephen Covey)",
+  "total_stories": 20,
+  "top8": [
+    {
+      "title": "Từ bóng tối ra ánh sáng",
+      "author": "Christopher Carrier",
+      "score": 5
+    },
+    {
+      "title": "Đối thủ đáng gờm",
+      "author": "Derek Burnett",
+      "score": 5
+    },
+    {
+      "title": "Tác giả của trường ca Messiah",
+      "author": "David Berreby",
+      "score": 5
+    },
+    {
+      "title": "Câu chuyện Giáng sinh - Dickens",
+      "author": "Thormas J. Burns",
+      "score": 5
+    },
+    {
+      "title": "Hành trình trên xe buýt",
+      "author": "Rachel Simon",
+      "score": 5
+    },
+    {
+      "title": "Hai từ nên tránh và hai từ nên nhớ",
+      "author": "Arthur Gordon",
+      "score": 5
+    },
+    {
+      "title": "Bài học trong giây lát",
+      "author": "Michael J. Collins, M.D.",
+      "score": 5
+    },
+    {
+      "title": "Món quà quý giá nhất - Jack Benny",
+      "author": "Jack Benny",
+      "score": 5
+    }
+  ],
+  "all_scored": [
+    {
+      "title": "Từ bóng tối ra ánh sáng",
+      "author": "Christopher Carrier",
+      "score": 5,
+      "length_chars": 16450
+    },
+    {
+      "title": "Đối thủ đáng gờm",
+      "author": "Derek Burnett",
+      "score": 5,
+      "length_chars": 14477
+    },
+    {
+      "title": "Tác giả của trường ca Messiah",
+      "author": "David Berreby",
+      "score": 5,
+      "length_chars": 14295
+    },
+    {
+      "title": "Câu chuyện Giáng sinh - Dickens",
+      "author": "Thormas J. Burns",
+      "score": 5,
+      "length_chars": 11670
+    },
+    {
+      "title": "Hành trình trên xe buýt",
+      "author": "Rachel Simon",
+      "score": 5,
+      "length_chars": 11502
+    },
+    {
+      "title": "Hai từ nên tránh và hai từ nên nhớ",
+      "author": "Arthur Gordon",
+      "score": 5,
+      "length_chars": 10297
+    },
+    {
+      "title": "Bài học trong giây lát",
+      "author": "Michael J. Collins, M.D.",
+      "score": 5,
+      "length_chars": 9685
+    },
+    {
+      "title": "Món quà quý giá nhất - Jack Benny",
+      "author": "Jack Benny",
+      "score": 5,
+      "length_chars": 9302
+    },
+    {
+      "title": "Lời khuyên của Gandhi",
+      "author": "Vijaya Lakshmi Pandit",
+      "score": 5,
+      "length_chars": 8274
+    },
+    {
+      "title": "Liệu pháp tiếng cười",
+      "author": "Robert Schimmel",
+      "score": 5,
+      "length_chars": 8182
+    },
+    {
+      "title": "Sarah Mahoney",
+      "author": "Sarah Mahoney",
+      "score": 5,
+      "length_chars": 6887
+    },
+    {
+      "title": "Niềm hạnh phúc nhỏ nhoi",
+      "author": "Albert P. Hout",
+      "score": 5,
+      "length_chars": 3241
+    },
+    {
+      "title": "Robert Ballard - Titanic",
+      "author": "Jamice Leqry",
+      "score": 5,
+      "length_chars": 3158
+    },
+    {
+      "title": "Nếu tôi được sống thêm lần nữa",
+      "author": "Erma Bombeck",
+      "score": 5,
+      "length_chars": 1748
+    },
+    {
+      "title": "Bài học từ người Eskimo",
+      "author": "Gontran de Poncins",
+      "score": 4,
+      "length_chars": 6622
+    },
+    {
+      "title": "Amy Tan và chồng",
+      "author": "Gary Sledge",
+      "score": 4,
+      "length_chars": 2317
+    },
+    {
+      "title": "Câu chuyện ở sân bay",
+      "author": "Terry Paulson",
+      "score": 4,
+      "length_chars": 1210
+    },
+    {
+      "title": "Nghệ thuật quản lý khách sạn - Ritz",
+      "author": "George Kenf",
+      "score": 3,
+      "length_chars": 10095
+    },
+    {
+      "title": "Thông điệp từ vườn cây thích",
+      "author": "Edward Ziegler",
+      "score": 2,
+      "length_chars": 6965
+    },
+    {
+      "title": "Nghiên cứu của anh thật nhảm nhí",
+      "author": "Fran Lostys",
+      "score": 0,
+      "length_chars": 1929
+    }
+  ]
+}
