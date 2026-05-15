@@ -496,7 +496,8 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     last_v = f"vsub{len(sub_overlays) - 1}" if sub_overlays else "vbase"
     
     filter_lines = [
-        f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        f"[0:v]tonemap=hable:desat=0,"
+        f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
         f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
         f"fps=30,format=rgba[vbase]",
         f"[1:a]adelay={delay_ms}|{delay_ms}[a]"
