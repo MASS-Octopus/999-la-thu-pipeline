@@ -97,7 +97,7 @@ def _call_ollama_format(prompt):
         "model": OLLAMA_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 1024, "think": false}
+        "options": {"temperature": 0.7, "num_predict": 1024, "think": False}
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload)
     req.add_header("Content-Type", "application/json")
