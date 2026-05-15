@@ -113,30 +113,41 @@ def clean_vni_errors(text):
 
 def fix_raw_text_ai(raw_text):
     """Dùng LLM sửa raw OCR text → câu hoàn chỉnh, không mất chữ, không ngắt giữa chừng."""
-    prompt = f"""REPAIR OCR-DAMAGED VIETNAMESE TEXT. The input is raw OCR output that may have:
-- Dropped characters or broken words
-- Mid-sentence truncation
-- VNI encoding artifacts
-- Missing punctuation
-- Nonsense fragments
+    prompt = f"""REPAIR THIS OCR-DAMAGED VIETNAMESE TEXT. DO NOT explain what you fixed. DO NOT comment on the text. Just output the corrected text directly.
 
-Your job:
-- Restore the complete, natural Vietnamese sentence
-- Fix broken words and missing characters by inferring from context
-- Remove OCR noise (z, FÁ, zZ, page numbers, headers like "Bức thư thứ...")
-- Add proper punctuation and capitalization
-- If the text is clearly truncated mid-sentence, complete it naturally based on context
-- Output ONLY the repaired text, no explanation, no intro
-- Vietnamese ONLY
+Input may have: dropped chars, truncation, VNI artifacts, OCR noise (z, FÁ, zZ, page numbers).
+Your ONLY job: output the repaired Vietnamese text. Nothing else. No labels, no analysis.
 
-Input: {raw_text}
+Broken text: {raw_text}
 
-Output:"""
+Repaired:"""
     result = _call_ollama_format(prompt)
     if result:
         import re
+        # Strip Chinese
         result = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf]+', '', result).strip()
-        return result
+        
+        # Post-process: strip any meta commentary gemini may still generate
+        # Find the actual repaired text — it's the longest coherent Vietnamese paragraph
+        paragraphs = [p.strip() for p in result.split('\n\n') if p.strip()]
+        if paragraphs:
+            # Score each paragraph: prefer ones with Vietnamese words and no English/analysis
+            def is_meta(p):
+                meta_markers = ['might appear', 'is the standard', 'is definitely', 
+                               'Text:', 'Analysis:', 'Note:', 'OCR noise', 'Explanation:',
+                               'Đây là', 'Dưới đây', 'Phiên bản']
+                lower = p.lower()
+                return any(m.lower() in lower for m in meta_markers)
+            
+            # Filter out meta paragraphs
+            clean_paras = [p for p in paragraphs if not is_meta(p)]
+            if clean_paras:
+                result = '\n\n'.join(clean_paras)
+            else:
+                # Fallback: pick the longest paragraph
+                result = max(paragraphs, key=len)
+        
+        return result.strip()
     print("  ⚠️ AI fix failed → keep raw")
     return raw_text
 
