@@ -6,7 +6,7 @@
 - PIL render subtitle PNGs → ffmpeg overlay 1 lần
 """
 
-import json, os, sys, subprocess, time
+import json, os, sys, subprocess, time, random
 import urllib.request, urllib.parse
 
 PEXELS_KEY = "Q3rh4s6N17TYVUhcACEk6kWhPN2UXXU5TX0isucbKnrF0KEw8RrfGOny"
@@ -59,7 +59,9 @@ def save_used_videos(ids):
 
 # === FORMAT TTS (LLM via Ollama, manual fallback) ===
 
-TTS_FORMAT_PROMPT = """You are a TTS emotional text formatter. Your job is to convert a short personal monologue into expressive, emotionally rich TTS-optimized text — written as if a close friend is speaking warmly to their best friend.
+TTS_FORMAT_PROMPT = """CRITICAL RULE: Output VIETNAMESE ONLY. Never output Chinese, Hanzi, Kanji, CJK, or any non-Vietnamese script. If you output non-Vietnamese text, the system will reject your response.
+
+You are a TTS emotional text formatter. Your job is to convert a short personal monologue into expressive, emotionally rich TTS-optimized text — written as if a close friend is speaking warmly to their best friend.
 
 Rules:
 - Keep the original meaning and emotion 100%
@@ -164,17 +166,32 @@ def format_tts_ai(raw_text):
 
 
 def format_tts_manual(raw_text):
-    """Fallback: hardcoded format cho thư số 1. Dùng khi LLM không khả dụng."""
+    """Fallback: tự xử lý raw_text thành dạng TTS-friendly, không dùng LLM.
+    Tách thành câu ngắn, thêm dấu ba chấm, chuẩn hóa xuống dòng."""
+    import re
+    # Safety net: strip Chinese/Hanzi/Kanji characters
+    raw_text = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+', '', raw_text).strip()
     text = raw_text.replace("\n", " ").strip()
+    # Collapse multiple spaces
+    text = " ".join(text.split())
     
-    sentences = [
-        "Kể từ hôm nay... mỗi ngày hãy cười lên nhé.",
-        "trên đời này... trừ việc sinh tử ra... còn lại đều là chuyện nhỏ thôi.",
-        "cho dù gặp phải chuyện buồn gì đi chăng nữa... cũng đừng tự làm khó mình mà.",
-        "cho dù xảy ra chuyện rắc rối đến thế nào... cũng chẳng cần phải đau lòng đâu.",
-        "Hôm nay là ngày bạn còn trẻ nhất đấy... so với những ngày tháng nỗ lực về sau.",
-        "Bởi vì có ngày mai... hôm nay mãi mãi chỉ là vạch kẻ xuất phát cho hành trình ấy... cố lên nhé.",
-    ]
+    # Split by sentence-ending punctuation
+    parts = re.split(r'(?<=[.!?])\s+', text)
+    
+    sentences = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Add trailing punctuation if missing
+        if p[-1] not in '.!?…':
+            p += '.'
+        # Normalize: lowercase first letter (for TTS flow)
+        if len(p) > 0 and p[0].isupper() and len(p) > 10:
+            # Keep first letter uppercase for proper nouns
+            pass
+        sentences.append(p)
+    
     tts_text = " ".join(sentences)
     return tts_text, sentences
 
@@ -191,8 +208,12 @@ def pexels_search(query, per_page=15):
 
 def pick_new_videos(videos, used_ids, max_n=3):
     valid = [v for v in videos if v["id"] not in used_ids and v.get("height", 0) >= 1080 and v.get("height", 0) > v.get("width", 0)]
+    # Sort by duration first, then pick từ top 70% để vừa dài vừa đa dạng
     valid.sort(key=lambda v: v.get("duration", 0), reverse=True)
-    return valid[:max_n]
+    # Giới hạn pool để tránh chọn video quá ngắn, rồi shuffle để đa dạng
+    pool = valid[:max(len(valid), max_n * 3)]
+    random.shuffle(pool)
+    return pool[:max_n]
 
 
 def get_best_file(video):

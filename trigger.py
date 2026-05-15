@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Trigger TTS video từ data letters.json — chọn ngẫu nhiên, chạy pipeline, gửi Discord."""
 
-import json, os, sys, random, subprocess, re
+import json, os, sys, random, subprocess, re, hashlib
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 LETTERS_FILE = os.path.join(REPO, "data", "letters.json")
@@ -23,9 +23,15 @@ def load_env():
                 break
     return token
 
+def content_hash(content):
+    """SHA256 hash của nội dung — dùng để dedup bất kể so_thu thay đổi."""
+    return hashlib.sha256(content.strip().encode()).hexdigest()[:16]
+
 def load_completed():
     try:
-        return set(json.load(open(STATE_FILE)))
+        data = json.load(open(STATE_FILE))
+        # Support both old format (list of ints) and new format (list of hashes)
+        return set(str(x) for x in data)
     except:
         return set()
 
@@ -34,8 +40,8 @@ def save_completed(s):
     json.dump(list(s), open(STATE_FILE, "w"))
 
 def pick_random(letters, completed):
-    """Chọn 1 thư ngẫu nhiên chưa từng chạy."""
-    available = [l for l in letters if l["so_thu"] not in completed]
+    """Chọn 1 thư ngẫu nhiên chưa từng chạy (dùng hash nội dung)."""
+    available = [l for l in letters if content_hash(l.get("noi_dung", "")) not in completed]
     if not available:
         print("❌ Hết thư để chạy!")
         return None
