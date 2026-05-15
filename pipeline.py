@@ -81,7 +81,7 @@ Rules:
   - Hope/looking forward: biết đâu được... hy vọng mà... rồi sẽ ổn... còn ngày mai... chờ xem nhé... sẽ tới thôi...
 - Do NOT overuse — max 1 emphasis word per 2 sentences
 - Match the emotional tone of the input (sad, hopeful, tired, warm, nostalgic...)
-- Output MUST be under 500 characters total
+- Keep the text concise but emotionally complete — capture the full emotional journey, don't truncate mid-feeling
 - Output in Vietnamese ONLY. Never output Chinese characters, Hanzi, Kanji, or any CJK script.
 - Output plain text only, no explanation
 
