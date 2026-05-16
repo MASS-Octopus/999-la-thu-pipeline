@@ -699,8 +699,101 @@ def pipeline(so_thu, raw_content):
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("so_thu", type=int, nargs="?", default=0)
+    ap.add_argument("--text", type=str, default=None, help="Skip OCR fix+format, use this text directly for TTS")
+    ap.add_argument("--format-only", action="store_true", help="Only format text (no TTS, no video)")
+    args = ap.parse_args()
+    
     letters = json.load(open(LETTERS_JSON))
-    so = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    for l in [l for l in letters if l["so_thu"] == so]:
-        r = pipeline(l["so_thu"], l["noi_dung"])
-        print(f"\n🔗 RESULT: {r}")
+    so = args.so_thu
+    
+    if args.format_only:
+        # Format-only mode: chỉ format text, không TTS, không video
+        for l in [l for l in letters if l["so_thu"] == so]:
+            raw_content = l.get("noi_dung", l.get("text", ""))
+            print(f"\n{'='*60}\n📝 Thư số {so} (format-only)\n📄 {raw_content[:120]}...\n{'='*60}")
+            
+            # Fix raw OCR → Format TTS
+            print(f"  🔧 Fixing raw OCR text...")
+            fixed = fix_raw_text_ai(raw_content)
+            print(f"  📝 OCR fixed ({len(raw_content)}→{len(fixed)} chars): {fixed[:120]}...")
+            
+            print(f"  ✍️ Formatting TTS text (LLM)...")
+            cleaned = clean_vni_errors(fixed)
+            tts_text, sentences = format_tts_ai(cleaned)
+            print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
+            print(f"FORMATTED_TEXT:{tts_text}")
+            break
+    
+    elif args.text:
+        # Produce mode: dùng text đã format sẵn
+        print(f"\n{'='*60}\n📝 Thư số {so} (produce mode)\n📄 {args.text[:120]}...\n{'='*60}")
+        outdir = f"/tmp/thu_{so}_pexels"
+        os.makedirs(outdir, exist_ok=True)
+        used_ids = load_used_videos()
+        
+        # Parse sentences từ formatted text
+        import re
+        sentences = re.split(r'\n{2,}', args.text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if not sentences:
+            sentences = [args.text.strip()]
+        
+        # Pexels
+        all_videos = []
+        for kw in PEXELS_QUERIES:
+            for v in pick_new_videos(pexels_search(kw), used_ids, max_n=2):
+                all_videos.append(v)
+                print(f"    + id={v['id']}, {v['duration']}s")
+            time.sleep(0.3)
+            if len(all_videos) >= 5: break
+        if not all_videos: 
+            print("❌ Không tìm được video!")
+            sys.exit(1)
+        
+        # TTS
+        ap_tts = f"{outdir}/tts.mp3"
+        print(f"  🎙 ElevenLabs...")
+        ok, alignment = generate_tts_with_timestamps(args.text, ap_tts)
+        if not ok: sys.exit(1)
+        aud_dur = get_duration(ap_tts)
+        print(f"  ✅ TTS: {os.path.getsize(ap_tts)/1000:.0f} KB, {aud_dur:.1f}s")
+        
+        # Segments
+        segments = alignment_to_segments(alignment, sentences)
+        sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
+        
+        # Video
+        total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
+        all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
+        downloaded = []; total_dl = 0.0
+        for v in all_videos:
+            if total_dl >= total_dur + 3: break
+            fp = f"{outdir}/vid_{v['id']}.mp4"
+            if download_video(get_best_file(v), fp):
+                downloaded.append(fp); total_dl += get_duration(fp)
+        if not downloaded: print("❌ Không download được video!"); sys.exit(1)
+        
+        video_fp = downloaded[0] if len(downloaded) == 1 and total_dl < total_dur else (
+            f"{outdir}/concat_bg.mp4" if len(downloaded) > 1 and concat_videos(downloaded, f"{outdir}/concat_bg.mp4") else downloaded[0]
+        )
+        
+        op = f"{outdir}/tiktok.mp4"
+        if not build_tiktok(video_fp, ap_tts, sub_pngs, segments, op): sys.exit(1)
+        
+        cdn = upload_cdn(op)
+        if not cdn: print(f"MEDIA:{op}")
+        else:
+            for v in all_videos:
+                if v["id"] not in used_ids: used_ids.append(v["id"])
+            save_used_videos(used_ids)
+            print(f"✅ CDN: {cdn}")
+        
+        print(f"RESULT: {cdn if cdn else op}")
+    else:
+        # Normal mode
+        for l in [l for l in letters if l["so_thu"] == so]:
+            r = pipeline(l["so_thu"], l["noi_dung"])
+            print(f"\n🔗 RESULT: {r}")
