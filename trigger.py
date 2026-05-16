@@ -140,37 +140,26 @@ def main():
     
     print(f"\n✅ CDN: {cdn}")
     
-    # Gửi Discord (3 messages)
-    token = load_env()
-    if not token:
-        print("❌ No Discord token")
-        print(f"CDN: {cdn}")
-        print(f"Content: {(formatted or content)[:200]}...")
-        return
-    
     # Dùng formatted text (tiếng Việt thuần) nếu có
     display_text = formatted if formatted else content
-    
-    # Message A: CDN link only
-    msg_a = f"🎬 **Video mới — #{so_thu}**\n\n🔗 {cdn}"
-    send_discord(token, msg_a)
-    
-    # Message B: Full formatted text (copy cho mô tả TikTok)
     hashtags = generate_hashtags(display_text)
-    msg_b = f"📝 **{title}**\n*{source}*\n\n{display_text}\n\n{hashtags}"
-    send_discord(token, msg_b)
     
-    # Message C: Confirm prompt
-    msg_c = f"✅ Thư `#{so_thu}` đã tạo xong. Reply `ok` để xác nhận & remove khỏi pool, hoặc `skip` để giữ lại."
-    send_discord(token, msg_c)
-    
-    # Lưu pending state (chưa remove)
-    pending_file = os.path.expanduser("~/.hermes/state/tts_pending.json")
+    # Lưu pending preview state (chờ user review)
+    pending_file = os.path.expanduser("~/.hermes/state/tts_pending_preview.json")
     os.makedirs(os.path.dirname(pending_file), exist_ok=True)
-    json.dump({"so_thu": so_thu, "cdn": cdn, "title": title}, open(pending_file, "w"), ensure_ascii=False)
+    pending_data = {
+        "so_thu": so_thu,
+        "cdn": cdn,
+        "title": title,
+        "source": source,
+        "display_text": display_text,
+        "hashtags": hashtags
+    }
+    json.dump(pending_data, open(pending_file, "w"), ensure_ascii=False)
     
-    print(f"\n📤 Sent to #tts-video channel (pending confirm)")
-    print(f"   → Reply 'ok #{so_thu}' để confirm & remove")
+    # Không tự động gửi Discord — để Hermes relay preview cho user review trước
+    print(f"\nPENDING_PREVIEW: {so_thu}")
+    print(f"   → Gửi cho Anh review, đợi confirm rồi mới post #tts-video")
 
 if __name__ == "__main__":
     main()
