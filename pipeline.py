@@ -738,8 +738,12 @@ if __name__ == "__main__":
         import re
         sentences = re.split(r'\n{2,}', args.text.strip())
         sentences = [s.strip() for s in sentences if s.strip()]
-        if not sentences:
-            sentences = [args.text.strip()]
+        if not sentences or len(sentences) == 1:
+            # Fallback: split bằng dấu câu (.!?) nếu không có paragraph breaks
+            raw = re.split(r'(?<=[.!?])\s+', args.text.strip())
+            sentences = [s.strip() for s in raw if s.strip()]
+            if len(sentences) <= 1:
+                sentences = [args.text.strip()]
         
         # Pexels
         all_videos = []
