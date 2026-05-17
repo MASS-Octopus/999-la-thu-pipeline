@@ -291,7 +291,7 @@ def download_video(url, outpath):
 
 def generate_tts_with_timestamps(text, outpath):
     """Gọi ElevenLabs TTS với alignment timestamps. Trả về (bool, alignment_dict)."""
-    payload = json.dumps({"text": text, "model_id": ELEVENLABS_MODEL, "voice_settings": {"stability": 0.2, "similarity_boost": 0.7, "style": 0.9, "speed": 1.3, "use_speaker_boost": True}}).encode()
+    payload = json.dumps({"text": text, "model_id": ELEVENLABS_MODEL, "voice_settings": {"stability": 0.2, "similarity_boost": 0.7, "style": 0.9, "speed": 1.35, "use_speaker_boost": True}}).encode()
     req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}/with-timestamps?language_code=vi&output_format=mp3_44100_128", data=payload)
     req.add_header("xi-api-key", ELEVENLABS_KEY); req.add_header("Content-Type", "application/json")
     try:
