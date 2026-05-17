@@ -224,6 +224,46 @@ def format_tts_ai(raw_text):
     return format_tts_manual(raw_text)
 
 
+def check_coherence(tts_text):
+    """Dùng LLM kiểm tra tính nhất quán chủ đề. Nếu có câu lạc → sửa lại."""
+    prompt = f"""You are a coherence checker for Vietnamese emotional monologues. 
+The text below is a short TTS script (close friend talking to their best friend).
+
+Your job:
+1. Identify the MAIN THEME of the text (e.g., "perseverance", "self-love", "gratitude", "loss"...).
+2. Check EVERY sentence: does it relate to the main theme? Flag any sentence that drifts off-topic.
+3. If ALL sentences are coherent → output "PASS" on the first line, then nothing else.
+4. If any sentence is off-topic → output "FIX" on the first line, then on the second line output the FIXED text (rewrite only the off-topic sentence(s) to match the theme, keep all good sentences exactly as-is). Do NOT add commentary.
+
+Text to check:
+{tts_text}
+
+Output (PASS or FIX + fixed text):"""
+
+    result = _call_ollama_format(prompt)
+    if not result:
+        return tts_text  # nếu LLM fail thì giữ nguyên
+    
+    lines = result.strip().split('\n', 1)
+    verdict = lines[0].strip().upper()
+    
+    if verdict == 'PASS':
+        print(f"  ✅ Coherence check: PASS")
+        return tts_text
+    elif verdict == 'FIX' and len(lines) > 1:
+        fixed = lines[1].strip()
+        # Clean: strip any markdown fences or meta
+        import re
+        fixed = re.sub(r'^```[^\n]*\n', '', fixed)
+        fixed = re.sub(r'\n```\s*$', '', fixed)
+        fixed = re.sub(r'^"|"$', '', fixed).strip()
+        if fixed and len(fixed) > 20:
+            print(f"  🔧 Coherence check: FIXED (lạc chủ đề → đã sửa)")
+            return fixed
+    
+    return tts_text  # fallback: giữ nguyên
+
+
 def format_tts_manual(raw_text):
     """Fallback: tự xử lý raw_text thành dạng TTS-friendly, không dùng LLM.
     Tách thành câu ngắn, thêm dấu ba chấm, chuẩn hóa xuống dòng."""
@@ -621,6 +661,11 @@ def pipeline(so_thu, raw_content):
     cleaned = clean_vni_errors(fixed)
     tts_text, sentences = format_tts_ai(cleaned)
     print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
+    
+    # Coherence check: LLM đánh giá + tự sửa nếu lạc chủ đề
+    tts_text = check_coherence(tts_text)
+    sentences = _parse_formatted_text(tts_text)
+    
     # In ra dòng đặc biệt để trigger.py capture
     print(f"FORMATTED_TEXT:{tts_text}")
 
@@ -769,6 +814,10 @@ if __name__ == "__main__":
             cleaned = clean_vni_errors(fixed)
             tts_text, sentences = format_tts_ai(cleaned)
             print(f"  📝 Formatted ({len(tts_text)} chars, {len(sentences)} câu): {tts_text[:150]}...")
+            
+            # Coherence check: LLM đánh giá + tự sửa nếu lạc chủ đề
+            tts_text = check_coherence(tts_text)
+            
             print(f"FORMATTED_TEXT:{tts_text}")
             break
     
