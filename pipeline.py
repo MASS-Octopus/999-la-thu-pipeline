@@ -642,9 +642,27 @@ def pipeline(so_thu, raw_content):
     used_ids = load_used_videos()
     print(f"  📋 Used videos: {len(used_ids)} IDs tracked")
 
-    # 1. Pexels
+    # 1. LLM chọn Pexels keywords theo nội dung thư
+    print(f"  🧠 Generating Pexels keywords from letter content...")
+    kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 5 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
+Output ONLY keywords separated by commas, no explanation. Keywords must be 2-4 words each, descriptive, suitable for stock video search.
+
+Monologue: {raw_content[:500]}
+
+Keywords:"""
+    kw_result = _call_ollama_format(kw_prompt)
+    if kw_result:
+        pexels_queries = [k.strip() for k in kw_result.split(',') if k.strip()][:6]
+        if pexels_queries:
+            print(f"  ✅ Keywords: {', '.join(pexels_queries[:5])}")
+        else:
+            pexels_queries = list(PEXELS_QUERIES)
+    else:
+        pexels_queries = list(PEXELS_QUERIES)
+    
+    # 1b. Pexels search
     all_videos = []
-    for kw in PEXELS_QUERIES:
+    for kw in pexels_queries:
         print(f"  🔍 Pexels: '{kw}'")
         for v in pick_new_videos(pexels_search(kw), used_ids, max_n=2):
             all_videos.append(v)
@@ -839,9 +857,26 @@ if __name__ == "__main__":
             if len(sentences) <= 1:
                 sentences = [args.text.strip()]
         
+        # Generate Pexels keywords from letter content
+        kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 5 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
+Output ONLY keywords separated by commas, no explanation. Keywords must be 2-4 words each.
+
+Monologue: {args.text[:500]}
+
+Keywords:"""
+        kw_result = _call_ollama_format(kw_prompt)
+        if kw_result:
+            pexels_queries = [k.strip() for k in kw_result.split(',') if k.strip()][:6]
+            if pexels_queries:
+                print(f"    ✅ Keywords: {', '.join(pexels_queries[:5])}")
+            else:
+                pexels_queries = list(PEXELS_QUERIES)
+        else:
+            pexels_queries = list(PEXELS_QUERIES)
+        
         # Pexels
         all_videos = []
-        for kw in PEXELS_QUERIES:
+        for kw in pexels_queries:
             for v in pick_new_videos(pexels_search(kw), used_ids, max_n=2):
                 all_videos.append(v)
                 print(f"    + id={v['id']}, {v['duration']}s")
