@@ -898,20 +898,67 @@ Keywords:"""
         segments = alignment_to_segments(alignment, sentences)
         sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
         
-        # Video
+        # Video — loop tải thêm nếu chưa đủ (ko stream_loop)
         total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
         all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
         downloaded = []; total_dl = 0.0
-        for v in all_videos:
-            if total_dl >= total_dur + 3: break
-            fp = f"{outdir}/vid_{v['id']}.mp4"
-            if download_video(get_best_file(v), fp):
-                downloaded.append(fp); total_dl += get_duration(fp)
+        
+        max_retries = 2
+        query_off = 0
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                # Tải thêm video mới
+                new_kws = pexels_queries[query_off:] + pexels_queries[:query_off]
+                for kw in new_kws[:4]:
+                    print(f"  🔍 Pexels (retry {attempt}): '{kw}'")
+                    for v in pick_new_videos(pexels_search(kw), used_ids, max_n=3):
+                        if total_dl >= total_dur + 3: break
+                        fp = f"{outdir}/vid_{v['id']}.mp4"
+                        if download_video(get_best_file(v), fp):
+                            d = get_duration(fp)
+                            downloaded.append(fp); total_dl += d
+                            print(f"    + id={v['id']}, {d:.1f}s (total: {total_dl:.1f}s)")
+                    time.sleep(0.3)
+                    if total_dl >= total_dur + 3: break
+                query_off = (query_off + 3) % len(pexels_queries)
+            
+            for v in all_videos:
+                if total_dl >= total_dur + 3: break
+                fp = f"{outdir}/vid_{v['id']}.mp4"
+                if fp in downloaded: continue
+                if download_video(get_best_file(v), fp):
+                    d = get_duration(fp)
+                    downloaded.append(fp); total_dl += d
+                    print(f"    📥 Downloaded id={v['id']}, {d:.1f}s (total: {total_dl:.1f}s)")
+            
+            if total_dl >= total_dur: break
+            if attempt < max_retries: print(f"  ⚠️ {total_dl:.1f}s < {total_dur:.1f}s → tải thêm video")
+        
         if not downloaded: print("❌ Không download được video!"); sys.exit(1)
         
-        video_fp = downloaded[0] if len(downloaded) == 1 and total_dl < total_dur else (
-            f"{outdir}/concat_bg.mp4" if len(downloaded) > 1 and concat_videos(downloaded, f"{outdir}/concat_bg.mp4") else downloaded[0]
-        )
+        # Trim video cho đều khi có 2 video
+        if len(downloaded) >= 2:
+            durs = [get_duration(p) for p in downloaded]
+            min_dur = min(durs)
+            # Trim các video dài hơn xuống bằng video ngắn nhất
+            for i, fp in enumerate(downloaded):
+                if durs[i] > min_dur + 2:  # chỉ trim nếu chênh > 2s
+                    trimmed = f"{outdir}/trim_{i}.mp4"
+                    if run(f'ffmpeg -y -i "{fp}" -t {min_dur:.1f} -c copy "{trimmed}"')[2] == 0:
+                        downloaded[i] = trimmed
+                        print(f"    ✂️ Trimmed vid {i}: {durs[i]:.1f}s → {min_dur:.1f}s")
+        
+        if len(downloaded) == 1 and total_dl < total_dur:
+            video_fp = downloaded[0]
+            print(f"  🔄 Fallback: stream_loop (1 video {total_dl:.1f}s < {total_dur:.1f}s)")
+        elif len(downloaded) > 1:
+            concat_fp = f"{outdir}/concat_bg.mp4"
+            if concat_videos(downloaded, concat_fp):
+                video_fp = concat_fp
+            else:
+                video_fp = downloaded[0]
+        else:
+            video_fp = downloaded[0]
         
         op = f"{outdir}/tiktok.mp4"
         if not build_tiktok(video_fp, ap_tts, sub_pngs, segments, op): sys.exit(1)
