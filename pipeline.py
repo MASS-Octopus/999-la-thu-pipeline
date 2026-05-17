@@ -560,14 +560,7 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     delay_ms = int(VIDEO_START_DELAY * 1000)
     fade_start = total_dur - fade_sec
     
-    # Loop video nếu cần (dùng -stream_loop -1 bên dưới)
-    need_loop = vid_dur < total_dur
-    if need_loop:
-        print(f"  🔄 Video ngắn ({vid_dur:.1f}s < {total_dur:.1f}s) → sẽ stream_loop")
-    
-    print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s, Target: {total_dur:.1f}s")
-    
-    # Build input list: video, audio, then all sub PNGs
+    # Build subtitle overlays
     sub_png_list = []
     sub_overlays = []
     sub_idx = 0
@@ -594,20 +587,46 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     
     last_v = f"vsub{len(sub_overlays) - 1}" if sub_overlays else "vbase"
     
-    filter_lines = [
-        f"[0:v]tonemap,"
-        f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-        f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
-        f"fps=30,format=rgba[vbase]",
-        f"[1:a]adelay={delay_ms}|{delay_ms}[a]"
-    ] + sub_overlays
+    # Loop video bằng split+xfade chuyển cảnh nếu thiếu
+    need_loop = vid_dur < total_dur
+    if need_loop:
+        loops = int(total_dur / max(vid_dur - 0.8, 1)) + 2  # số lần loop (dư 1 để an toàn)
+        xfade_offset = vid_dur - 0.8  # offset cho mỗi xfade
+        
+        xfade_lines = [f"[0:v]split={loops}" + "".join(f"[v{i}]" for i in range(loops))]
+        prev = "v0"
+        for i in range(1, loops):
+            cur = f"vxf{i}"
+            off = i * xfade_offset
+            xfade_lines.append(f"[{prev}][v{i}]xfade=transition=fade:duration=0.8:offset={off:.3f}[{cur}]")
+            prev = cur
+        last_xf = prev
+        
+        filter_lines = [
+            ";".join(xfade_lines),
+            f"[{last_xf}]tonemap,"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+            f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
+            f"fps=30,format=rgba[vbase]",
+            f"[1:a]adelay={delay_ms}|{delay_ms}[a]"
+        ] + sub_overlays
+        
+        print(f"  🔄 Video ngắn ({vid_dur:.1f}s < {total_dur:.1f}s) → loop {loops}× + crossfade")
+    else:
+        filter_lines = [
+            f"[0:v]tonemap,"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+            f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
+            f"fps=30,format=rgba[vbase]",
+            f"[1:a]adelay={delay_ms}|{delay_ms}[a]"
+        ] + sub_overlays
+    
+    print(f"  🎬 Video: {vid_dur:.1f}s, Audio: {aud_dur:.1f}s, Target: {total_dur:.1f}s")
     
     filter_complex = ";".join(filter_lines)
     
-    video_input_flag = "-stream_loop -1 " if need_loop else ""
-    
     cmd = (
-        f'ffmpeg -y {video_input_flag}-i "{video_path}" -i "{audio_path}" '
+        f'ffmpeg -y -i "{video_path}" -i "{audio_path}" '
         f'{" ".join(sub_png_list)} '
         f'-filter_complex "{filter_complex}" '
         f'-map "[{last_v}]" -map "[a]" '
@@ -702,92 +721,23 @@ Keywords:"""
     # 5. Render subtitle HTML → PNGs
     sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
     
-    # 6. Download + concat loop: tải video đến khi đủ duration (không stream_loop)
+    # 6. Download 1 video (dùng loop + crossfade nếu thiếu)
     total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
-    max_retries = 3  # tối đa 3 vòng tìm thêm video
     
+    # Sort video theo duration giảm dần, chọn video dài nhất
+    all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
     video_fp = None
-    downloaded_paths = []
-    total_downloaded = 0.0
-    query_offset = 0  # xoay vòng queries để lấy video khác
     
-    for attempt in range(max_retries):
-        needed = total_dur - total_downloaded + 3.0  # cần ít nhất tổng + 3s buffer
-        
-        # Nếu đợt 2+ → lấy video mới từ Pexels (xoay queries)
-        if attempt > 0:
-            new_videos = []
-            for kw in PEXELS_QUERIES[query_offset:] + PEXELS_QUERIES[:query_offset]:
-                print(f"  🔍 Pexels (retry {attempt}): '{kw}'")
-                for v in pick_new_videos(pexels_search(kw), used_ids, max_n=3):
-                    new_videos.append(v)
-                    print(f"    + id={v['id']}, {v['duration']}s, {v['width']}×{v['height']}")
-                time.sleep(0.3)
-                if len(new_videos) >= 3: break
-            new_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
-            query_offset = (query_offset + 3) % len(PEXELS_QUERIES)
-            
-            # Download video mới
-            for v in new_videos:
-                if total_downloaded >= total_dur + 3.0:
-                    break
-                fp = f"{outdir}/vid_{v['id']}.mp4"
-                if not os.path.exists(fp):
-                    if not download_video(get_best_file(v), fp):
-                        continue
-                d = get_duration(fp)
-                downloaded_paths.append(fp)
-                total_downloaded += d
-                if v['id'] not in [vv['id'] for vv in all_videos]:
-                    all_videos.append(v)
-                print(f"    📥 Downloaded id={v['id']}, {d:.1f}s (total: {total_downloaded:.1f}s / needed: {total_dur:.1f}s)")
-        
-        # Download từ all_videos pool (đợt đầu + các đợt sau)
-        for v in all_videos:
-            if total_downloaded >= total_dur + 3.0:
-                break
-            fp = f"{outdir}/vid_{v['id']}.mp4"
-            if fp in downloaded_paths:
-                continue
-            if not download_video(get_best_file(v), fp):
-                continue
+    for v in all_videos:
+        fp = f"{outdir}/vid_{v['id']}.mp4"
+        if download_video(get_best_file(v), fp):
+            video_fp = fp
             d = get_duration(fp)
-            downloaded_paths.append(fp)
-            total_downloaded += d
-            print(f"    📥 Downloaded id={v['id']}, {d:.1f}s (total: {total_downloaded:.1f}s / needed: {total_dur:.1f}s")
-        
-        if not downloaded_paths:
-            return print("❌ Không download được video nào!")
-        
-        # Concat tất cả downloaded
-        if len(downloaded_paths) > 1:
-            print(f"  🔗 Concatenating {len(downloaded_paths)} videos ({total_downloaded:.1f}s total)...")
-            concat_fp = f"{outdir}/concat_bg.mp4"
-            if concat_videos(downloaded_paths, concat_fp):
-                concat_dur = get_duration(concat_fp)
-                if concat_dur >= total_dur:
-                    video_fp = concat_fp
-                    break
-                else:
-                    print(f"  ⚠️ Concatenated ({concat_dur:.1f}s) < total ({total_dur:.1f}s) → tải thêm video")
-            else:
-                print(f"  ⚠️ Concat failed → sẽ retry")
-        else:
-            single_dur = total_downloaded
-            if single_dur >= total_dur:
-                video_fp = downloaded_paths[0]
-                break
-            else:
-                print(f"  ⚠️ 1 video ({single_dur:.1f}s) < total ({total_dur:.1f}s) → tải thêm video")
+            print(f"  📥 Video: id={v['id']}, {d:.1f}s")
+            break
     
     if not video_fp:
-        # Fallback cuối cùng: dùng concat hoặc video dài nhất
-        concat_fp = f"{outdir}/concat_bg.mp4"
-        if os.path.exists(concat_fp) and get_duration(concat_fp) > 0:
-            video_fp = concat_fp
-        else:
-            video_fp = downloaded_paths[0] if downloaded_paths else all_videos[0]
-            print(f"  ⚠️ Fallback: dùng video dài nhất ({get_duration(video_fp):.1f}s) kèm stream_loop")
+        return print("❌ Không download được video!")
     
     print(f"  🎬 Final video: {video_fp}, {get_duration(video_fp):.1f}s")
     
@@ -900,57 +850,20 @@ Keywords:"""
         segments = alignment_to_segments(alignment, sentences)
         sub_pngs = render_subtitle_html(sentences, segments, f"{outdir}/subtitle")
         
-        # Video — loop tải thêm nếu chưa đủ (ko stream_loop)
+        # Video: 1 video duy nhất (loop + crossfade nếu thiếu)
         total_dur = VIDEO_START_DELAY + aud_dur + VIDEO_END_PAD
         all_videos.sort(key=lambda v: v.get("duration", 0), reverse=True)
-        downloaded = []; total_dl = 0.0
+        video_fp = None
         
-        max_retries = 2
-        query_off = 0
-        for attempt in range(max_retries + 1):
-            if attempt > 0:
-                # Tải thêm video mới
-                new_kws = pexels_queries[query_off:] + pexels_queries[:query_off]
-                for kw in new_kws[:4]:
-                    print(f"  🔍 Pexels (retry {attempt}): '{kw}'")
-                    for v in pick_new_videos(pexels_search(kw), used_ids, max_n=3):
-                        if total_dl >= total_dur + 3: break
-                        fp = f"{outdir}/vid_{v['id']}.mp4"
-                        if download_video(get_best_file(v), fp):
-                            d = get_duration(fp)
-                            downloaded.append(fp); total_dl += d
-                            print(f"    + id={v['id']}, {d:.1f}s (total: {total_dl:.1f}s)")
-                    time.sleep(0.3)
-                    if total_dl >= total_dur + 3: break
-                query_off = (query_off + 3) % len(pexels_queries)
-            
-            for v in all_videos:
-                if total_dl >= total_dur + 3: break
-                fp = f"{outdir}/vid_{v['id']}.mp4"
-                if fp in downloaded: continue
-                if download_video(get_best_file(v), fp):
-                    d = get_duration(fp)
-                    downloaded.append(fp); total_dl += d
-                    print(f"    📥 Downloaded id={v['id']}, {d:.1f}s (total: {total_dl:.1f}s)")
-            
-            if total_dl >= total_dur: break
-            if attempt < max_retries: print(f"  ⚠️ {total_dl:.1f}s < {total_dur:.1f}s → tải thêm video")
+        for v in all_videos:
+            fp = f"{outdir}/vid_{v['id']}.mp4"
+            if download_video(get_best_file(v), fp):
+                video_fp = fp
+                print(f"  📥 Video: id={v['id']}, {get_duration(fp):.1f}s")
+                break
         
-        if not downloaded: print("❌ Không download được video!"); sys.exit(1)
-        
-        if len(downloaded) == 1 and total_dl < total_dur:
-            video_fp = downloaded[0]
-            print(f"  🔄 Fallback: stream_loop (1 video {total_dl:.1f}s < {total_dur:.1f}s)")
-        elif len(downloaded) > 1:
-            concat_fp = f"{outdir}/concat_bg.mp4"
-            if concat_videos(downloaded, concat_fp):
-                video_fp = concat_fp
-                print(f"  🔗 Concatenated {len(downloaded)} videos → {get_duration(concat_fp):.1f}s")
-            else:
-                video_fp = downloaded[0]
-                print(f"  ⚠️ Concat fail → fallback stream_loop")
-        else:
-            video_fp = downloaded[0]
+        if not video_fp:
+            print("❌ Không download được video!"); sys.exit(1)
         
         op = f"{outdir}/tiktok.mp4"
         if not build_tiktok(video_fp, ap_tts, sub_pngs, segments, op): sys.exit(1)
