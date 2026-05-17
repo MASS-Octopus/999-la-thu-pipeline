@@ -938,17 +938,19 @@ Keywords:"""
         
         if not downloaded: print("❌ Không download được video!"); sys.exit(1)
         
-        # Trim video cho đều khi có 2 video
+        # Trim video cho đều khi có >= 2 video (re-encode để concat mượt)
         if len(downloaded) >= 2:
             durs = [get_duration(p) for p in downloaded]
             min_dur = min(durs)
-            # Trim các video dài hơn xuống bằng video ngắn nhất
             for i, fp in enumerate(downloaded):
-                if durs[i] > min_dur + 2:  # chỉ trim nếu chênh > 2s
+                if durs[i] > min_dur + 1:  # chỉ trim nếu chênh > 1s
                     trimmed = f"{outdir}/trim_{i}.mp4"
-                    if run(f'ffmpeg -y -i "{fp}" -t {min_dur:.1f} -c copy "{trimmed}"')[2] == 0:
+                    rc = run(f'ffmpeg -y -i "{fp}" -t {min_dur:.1f} -c:v libx264 -preset ultrafast -crf 18 -an "{trimmed}"')[2]
+                    if rc == 0:
                         downloaded[i] = trimmed
                         print(f"    ✂️ Trimmed vid {i}: {durs[i]:.1f}s → {min_dur:.1f}s")
+                    else:
+                        print(f"    ⚠️ Trim failed for vid {i}")
         
         if len(downloaded) == 1 and total_dl < total_dur:
             video_fp = downloaded[0]
