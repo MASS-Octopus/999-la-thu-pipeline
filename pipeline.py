@@ -938,20 +938,6 @@ Keywords:"""
         
         if not downloaded: print("❌ Không download được video!"); sys.exit(1)
         
-        # Trim video cho đều khi có >= 2 video (re-encode để concat mượt)
-        if len(downloaded) >= 2:
-            durs = [get_duration(p) for p in downloaded]
-            min_dur = min(durs)
-            for i, fp in enumerate(downloaded):
-                if durs[i] > min_dur + 1:  # chỉ trim nếu chênh > 1s
-                    trimmed = f"{outdir}/trim_{i}.mp4"
-                    rc = run(f'ffmpeg -y -i "{fp}" -t {min_dur:.1f} -c:v libx264 -preset ultrafast -crf 18 -an "{trimmed}"')[2]
-                    if rc == 0:
-                        downloaded[i] = trimmed
-                        print(f"    ✂️ Trimmed vid {i}: {durs[i]:.1f}s → {min_dur:.1f}s")
-                    else:
-                        print(f"    ⚠️ Trim failed for vid {i}")
-        
         if len(downloaded) == 1 and total_dl < total_dur:
             video_fp = downloaded[0]
             print(f"  🔄 Fallback: stream_loop (1 video {total_dl:.1f}s < {total_dur:.1f}s)")
@@ -959,8 +945,10 @@ Keywords:"""
             concat_fp = f"{outdir}/concat_bg.mp4"
             if concat_videos(downloaded, concat_fp):
                 video_fp = concat_fp
+                print(f"  🔗 Concatenated {len(downloaded)} videos → {get_duration(concat_fp):.1f}s")
             else:
                 video_fp = downloaded[0]
+                print(f"  ⚠️ Concat fail → fallback stream_loop")
         else:
             video_fp = downloaded[0]
         
