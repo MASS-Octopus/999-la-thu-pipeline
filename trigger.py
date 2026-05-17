@@ -180,9 +180,13 @@ def step_produce():
         print(f"❌ No Discord token\\nCDN: {cdn}")
         return
     
-    # Gửi Discord: 1 message gọn (CDN + hashtags, không full text TTS)
-    msg = f"🎬 **{title} — #{so_thu}**\n{cdn}\n\n{hashtags}"
-    send_discord(token, msg)
+    # Message A: CDN link
+    msg_a = f"🎬 **{title} — #{so_thu}**\n\n🔗 {cdn}"
+    send_discord(token, msg_a)
+    
+    # Message B: Full formatted text
+    msg_b = f"📝 **{title}**\n*{source}*\n\n{formatted_text}\n\n{hashtags}"
+    send_discord(token, msg_b)
     
     print(f"\n📤 Posted to #tts-video")
     
