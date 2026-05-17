@@ -644,8 +644,9 @@ def pipeline(so_thu, raw_content):
 
     # 1. LLM chọn Pexels keywords theo nội dung thư
     print(f"  🧠 Generating Pexels keywords from letter content...")
-    kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 5 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
-Output ONLY keywords separated by commas, no explanation. Keywords must be 2-4 words each, descriptive, suitable for stock video search.
+    kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 3 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
+Output ONLY keywords separated by commas, no explanation. Keywords must be 2-3 words each, descriptive, suitable for stock video search.
+CRITICAL: NO people, no humans, no faces, no silhouettes. Only nature, sceneries, objects, landscapes, cityscapes without people.
 
 Monologue: {raw_content[:500]}
 
@@ -858,8 +859,9 @@ if __name__ == "__main__":
                 sentences = [args.text.strip()]
         
         # Generate Pexels keywords from letter content
-        kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 5 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
-Output ONLY keywords separated by commas, no explanation. Keywords must be 2-4 words each.
+        kw_prompt = f"""Analyze this Vietnamese emotional monologue. Suggest 3 Pexels video search keywords IN ENGLISH that match the MOOD and IMAGERY.
+Output ONLY keywords separated by commas, no explanation. Keywords must be 2-3 words each.
+CRITICAL: NO people, no humans, no faces, no silhouettes. Only nature, sceneries, objects, landscapes, cityscapes without people.
 
 Monologue: {args.text[:500]}
 
