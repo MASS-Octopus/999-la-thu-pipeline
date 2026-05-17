@@ -27,7 +27,7 @@ PEXELS_QUERIES = [
     "clouds drifting blue sky", "waterfall mist tropical", "bamboo forest green peaceful",
 ]
 # Subtitle style
-SUB_FONT = "/tmp/snpro-fonts/SNPro-Semibold-VI.ttf"  # SN Pro SemiBold, vietnamese subset
+SUB_FONT = "/tmp/snpro-fonts/Inter-SemiBold.ttf"  # Inter SemiBold (fallback, SNPro lost)
 SUB_SIZE = 50  # +2px (48→50)
 SUB_SIDE_PAD = 100
 SUB_OUTLINE = 3
@@ -555,7 +555,7 @@ def build_tiktok(video_path, audio_path, sub_pngs, segments, outpath, fade_sec=1
     last_v = f"vsub{len(sub_overlays) - 1}" if sub_overlays else "vbase"
     
     filter_lines = [
-        f"[0:v]colorspace=all=bt709:fast=1,"
+        f"[0:v]tonemap,"
         f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
         f"fade=t=in:d=0.8,fade=t=out:d={fade_sec}:start_time={fade_start},"
         f"fps=30,format=rgba[vbase]",
